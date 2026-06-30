@@ -203,7 +203,7 @@ public:
 
   double eta()
   {
-    return m_eta;
+    return m_eta[0];
   }
 
   /**
@@ -239,7 +239,7 @@ public:
     std::vector<Eigen::Vector3d> out;
     for(Eigen::Index i = 0; i < m_QP_dcm.size() / 2; i++)
     {
-      out.push_back(Eigen::Vector3d{m_QP_dcm(2 * i), m_QP_dcm(2 * i + 1), CoM_height});
+      out.push_back(Eigen::Vector3d{m_QP_dcm(2 * i), m_QP_dcm(2 * i + 1), CoM_height[i]});
     }
     return out;
   }
@@ -508,7 +508,7 @@ private:
   Eigen::MatrixXd create_zmp_matrix(bool addDelay);
   Eigen::MatrixXd create_u_matrix();
 
-  void Compute_Integration_Matrix(const double eta);
+  void Compute_Integration_Matrix(const std::vector<double> & eta);
 
   /**
    * Integrate The ZMP velocity to compute the CoM, CoMd and ZMP trajectory
@@ -589,10 +589,11 @@ private:
    */
   bool Slide_ZMP_region = false;
 
-  double m_eta = 1; // Prendulum frequency
-  double m_eta_free = 1; // Prendulum frequency disturbance free
+  std::vector<double> m_eta; // Prendulum frequency
+  std::vector<double> m_eta_free; // Prendulum frequency disturbance free
+  std::vector<double> CoM_height; 
+  double CoM_height_avg = 0.78; 
   double m_mass = 40.;
-  double CoM_height = 0.78;
   double g = 9.8; // Gravity acceleration
   double m_tk = 0; // Represent the initial time in the MPC horizon
   double m_t_global = 0; // Global time of the control scheme

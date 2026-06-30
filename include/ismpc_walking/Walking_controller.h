@@ -512,7 +512,7 @@ private:
   double y = 0.1;
   double z = 30; // Coordinate for a specified footstep position
 
-  bool active = false; // MPC stabilization on or not
+  bool active = true; // MPC stabilization on or not
   bool UseRealRobot = true; // To use the real robots data
   bool UseMPCState = false;
   bool UseStepRecovery = false;
