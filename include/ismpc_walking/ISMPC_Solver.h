@@ -607,13 +607,14 @@ private:
    */
   bool Slide_ZMP_region = false;
 
-  // Define trajectory constants for testing (e.g., zc = z0 + A*sin(b*t)) 
-  double A = 0.05; // 5 cm amplitude variation
-  double b = 0.5 * 2 * M_PI; // 1 Hz frequency
   std::vector<double> m_eta; // Prendulum frequency
   std::vector<double> m_eta_free; // Prendulum frequency disturbance free
-  std::vector<double> CoM_height; 
-  double CoM_height_avg = 0.78; 
+  std::vector<double> CoM_height;
+  double CoM_height_avg = 0.85;
+  double m_com_z_amplitude = 0.05; // Amplitude of the CoM height oscillation (metres)
+  // Elapsed time since the start of the current step cycle, used to compute
+  // the phase-based CoM height profile. Reset to 0 at each step switch.
+  double m_tk_within_step = 0.0;
   double m_mass = 40.;
   double g = 9.8; // Gravity acceleration
   double m_tk = 0; // Represent the initial time in the MPC horizon

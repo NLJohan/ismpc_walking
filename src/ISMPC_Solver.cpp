@@ -20,21 +20,13 @@ ISMPC_Solver::ISMPC_Solver(double delta_controller, double delta, double Tp, dou
   m_eta.resize(m_C);
   m_eta_free.resize(m_C);
 
-  double mAbb = - A * b * b;
-
-  for (int i = 0; i < m_C; ++i)
-  {
-    double t = i * m_delta;
-    // Analytical trajectory and its second derivative
-    CoM_height[i] = CoM_height_avg + A * std::sin(b * t);
-    double zc_ddot = mAbb * std::sin(b * t);
-
-    // Compute time-varying eta according to Smaldone et al. 2022
-    m_eta[i] = std::sqrt((zc_ddot + g) / CoM_height[i]);
-    m_eta_free[i] = m_eta[i]; // Disturbance-free initialized identically
-  }
-
-  // Passing the vector m_eta to the integration matrix function as requested
+  // At construction time m_timestamp is not yet available, so fill with the constant
+  // nominal height. init_MPC() will overwrite this with the phase-based profile on the
+  // first QP call, once footstep timings are known.
+  const double eta_nom = std::sqrt(g / CoM_height_avg);
+  std::fill(CoM_height.begin(), CoM_height.end(), CoM_height_avg);
+  std::fill(m_eta.begin(), m_eta.end(), eta_nom);
+  std::fill(m_eta_free.begin(), m_eta_free.end(), eta_nom);
   Compute_Integration_Matrix(m_eta);
 
   m_kappa = 1;
@@ -81,24 +73,18 @@ void ISMPC_Solver::configure(const ControllerConfiguration & config)
   m_C = (int)std::round((m_Tc) / m_delta);
   m_P = (int)std::round((m_Tp) / m_delta);
 
-  // High-performance trajectory generation initialization
+  // Resize to updated horizon size after configure() may have changed m_C
   CoM_height.resize(m_C);
   m_eta.resize(m_C);
   m_eta_free.resize(m_C);
 
-  double mAbb = - A * b * b;
+  CoM_height_avg = config.stab_config.comHeight;
 
-  for (int i = 0; i < m_C; ++i)
-  {
-    double t = i * m_delta;
-    double sin_bt = std::sin(b * t); // Single evaluation per step
-    
-    CoM_height[i] = CoM_height_avg + A * sin_bt;
-    double zc_ddot = mAbb * sin_bt;
-
-    m_eta[i] = std::sqrt((zc_ddot + g) / CoM_height[i]);
-    m_eta_free[i] = m_eta[i]; 
-  }
+  // Same as constructor: fill with constant nominal until init_MPC() has footstep timings.
+  const double eta_nom_cfg = std::sqrt(g / CoM_height_avg);
+  std::fill(CoM_height.begin(), CoM_height.end(), CoM_height_avg);
+  std::fill(m_eta.begin(), m_eta.end(), eta_nom_cfg);
+  std::fill(m_eta_free.begin(), m_eta_free.end(), eta_nom_cfg);
 
   Use_Stability_Task = config.use_stability_task;
   zmp_ref_offset = config.MPC_ZMP_ref_offset_sg_supp;
@@ -173,19 +159,72 @@ void ISMPC_Solver::init_MPC(const MPC_state & mpc_state, std::string Tail, int S
   w_k_inf.setZero();
   perturbation_duration = 0;
 
-  double mAbb = - A * b * b;
-
-  for (int i = 0; i < m_C; ++i)
+  // --- Phase-based CoM height profile ---
+  // m_tk is the elapsed time within the current step cycle (set above from mpc_state.t_k).
+  // It resets to 0 at each step switch, which is the signal we use to also reset
+  // m_tk_within_step. Outside of that event, m_tk_within_step advances by m_delta each call.
+  if(m_tk <= m_delta)
   {
-    // The horizon maps to absolute future time: m_t_global + i * m_delta
-    double t_future = m_t_global + i * m_delta;
-    double sin_bt = std::sin(b * t_future);
-    
-    CoM_height[i] = CoM_height_avg + A * sin_bt;
-    double zc_ddot = mAbb * sin_bt;
+    // m_tk just reset — a new step has started. Snap m_tk_within_step to m_tk so that
+    // the phase at sample 0 exactly equals m_tk / T_step rather than drifting.
+    m_tk_within_step = m_tk;
+  }
+  else
+  {
+    m_tk_within_step += m_delta;
+  }
+
+  // Build a flat array of step durations over the control horizon from m_timestamp.
+  // step_duration[j] = duration of the j-th upcoming step, step_start[j] = time relative
+  // to now at which step j starts. Index 0 is the current step (already started at
+  // -m_tk_within_step relative to now, landing at m_timestamp[0] - m_tk relative to now).
+  //
+  // We express everything as time-relative-to-now (t_i = i * m_delta) for sample i.
+  // Step j spans [t_start_j, t_end_j) where t_end_j = m_timestamp[j] - m_tk.
+  // The duration of step j is T_j = t_end_j - t_start_j.
+  // The phase of sample i within step j is phi = (t_i - t_start_j + m_tk_within_step) / T_j
+  // (the m_tk_within_step term accounts for the fact that step 0 already started earlier).
+
+  const double four_pi_sq = 4.0 * M_PI * M_PI; // precomputed constant
+
+  // t_start_j relative to now for step j=0: the current step started m_tk_within_step ago
+  double t_start_j = -m_tk_within_step;
+  size_t j = 0; // index into m_timestamp
+
+  for(int i = 0; i < m_C; ++i)
+  {
+    const double t_i = static_cast<double>(i) * m_delta; // time of sample i relative to now
+
+    // Advance step index if sample i has crossed into the next step
+    while(j + 1 < m_timestamp.size() && t_i >= m_timestamp[j] - m_tk)
+    {
+      t_start_j = m_timestamp[j] - m_tk; // new step starts here relative to now
+      ++j;
+    }
+
+    // Duration of the step that contains sample i
+    const double t_end_j = (j < m_timestamp.size()) ? (m_timestamp[j] - m_tk) : (m_timestamp.back() - m_tk + m_Tds);
+    const double T_j = t_end_j - t_start_j;
+    const double T_j_safe = (T_j > 1e-6) ? T_j : 1e-6; // guard against zero-duration edge case
+
+    // Phase in [0, 1] within step j
+    const double phi = std::clamp((t_i - t_start_j) / T_j_safe, 0.0, 1.0);
+
+    // Cosine profile: minimum height (crouch) at phi=0 (step start / double support),
+    // maximum height at phi=0.5 (mid single support). Same cosine evaluation gives both
+    // z_c and z_ddot analytically — no extra trig call.
+    const double cos_phi = std::cos(2.0 * M_PI * phi);
+
+    CoM_height[i] = CoM_height_avg - m_com_z_amplitude * cos_phi;
+
+    // z_ddot = A * (4*pi^2 / T^2) * cos(2*pi*phi)
+    // Derivation: z(phi) = z_nom - A*cos(2*pi*phi), phi = t/T (constant within step)
+    // dz/dt = A * 2*pi/T * sin(2*pi*phi)
+    // d2z/dt2 = A * (2*pi/T)^2 * cos(2*pi*phi)
+    const double zc_ddot = m_com_z_amplitude * (four_pi_sq / (T_j_safe * T_j_safe)) * cos_phi;
 
     m_eta[i] = std::sqrt((zc_ddot + g) / CoM_height[i]);
-    m_eta_free[i] = m_eta[i]; 
+    m_eta_free[i] = m_eta[i];
   }
 
   Compute_Integration_Matrix(m_eta);
