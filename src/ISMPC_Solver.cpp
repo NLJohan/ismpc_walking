@@ -20,11 +20,7 @@ ISMPC_Solver::ISMPC_Solver(double delta_controller, double delta, double Tp, dou
   m_eta.resize(m_C);
   m_eta_free.resize(m_C);
 
-  // Define trajectory constants for testing (e.g., zc = z0 + A*sin(b*t)) 
-  double A = 0.05; // 5 cm amplitude variation
-  double b = 2.0 * M_PI; // 1 Hz frequency
-
-  double mAbb = -A*b*b;
+  double mAbb = - A * b * b;
 
   for (int i = 0; i < m_C; ++i)
   {
@@ -90,10 +86,7 @@ void ISMPC_Solver::configure(const ControllerConfiguration & config)
   m_eta.resize(m_C);
   m_eta_free.resize(m_C);
 
-  double CoM_height_avg = config.stab_config.comHeight;
-  double A = 0.05; 
-  double b = 2.0 * M_PI; 
-  double mAbb = -A * b * b;
+  double mAbb = - A * b * b;
 
   for (int i = 0; i < m_C; ++i)
   {
@@ -180,10 +173,7 @@ void ISMPC_Solver::init_MPC(const MPC_state & mpc_state, std::string Tail, int S
   w_k_inf.setZero();
   perturbation_duration = 0;
 
-  // Update the time-varying vector trajectories based on current global time
-  double A = 0.05; 
-  double b = 2.0 * M_PI; 
-  double mAbb = -A * b * b;
+  double mAbb = - A * b * b;
 
   for (int i = 0; i < m_C; ++i)
   {
@@ -1236,21 +1226,36 @@ void ISMPC_Solver::Stability_Constraints()
 
   A_stab.setZero(2, N_variable);
   b_stab.setZero(2);
-  
+
   Eigen::Vector3d u_delay = U_k - P_z_k;
-  
+
   double t = 0;
   double duration = m_delta + m_delay_elapsed;
   const double disturbance_duration = perturbation_duration;
 
+  // Cumulative integral of eta from t_k up to t_k+j, i.e. integrated_eta_to[j] = sum_{k=0}^{j-1} eta_k * delta
+  // This mirrors the convention already used in compute_dcm(), and is the only mathematically
+  // correct way to propagate exp(-omega(t)) terms when omega is time-varying: the exponent must
+  // be the integral of omega over the elapsed interval, not a single local sample times elapsed time.
+  std::vector<double> integrated_eta_to(m_C + 1, 0.0);
+  {
+    double cum_sum = 0.0;
+    for(int k = 0; k < m_C; ++k)
+    {
+      cum_sum += m_eta[k];
+      integrated_eta_to[k + 1] = cum_sum * m_delta;
+    }
+  }
+
   for(int j = 0; j < m_C; j++)
   {
-    // Time-Varying Fix: Fetch local eta for the current preview step
     const double eta_j = m_eta[j];
     const double l_d_l_p_e = (m_lambda / (m_lambda + eta_j));
     const double e_d_l_p_e = (eta_j / (m_lambda + eta_j));
     const double tj = static_cast<double>(j) * m_delta;
-    const double exp_neg_eta_tj = std::exp(-eta_j * tj);
+
+    // exp(-integral_0^tj eta(tau) dtau) replaces the old exp(-eta_j * tj)
+    const double exp_neg_eta_tj = std::exp(-integrated_eta_to[j]);
 
     auto block_j = A_stab.block<2, 2>(0, 2 * j);
 
@@ -1260,6 +1265,9 @@ void ISMPC_Solver::Stability_Constraints()
     }
     else
     {
+      // time_diff is the residual sub-interval [tj, perturbation_duration]. Since eta is only known
+      // pointwise per-step, we approximate the integral over this (generally sub-delta) interval using
+      // the local eta_j, which is consistent because this interval lies entirely within step j.
       const double time_diff = perturbation_duration - tj;
       block_j =
           Eigen::Matrix2d::Identity() * exp_neg_eta_tj
@@ -1275,23 +1283,26 @@ void ISMPC_Solver::Stability_Constraints()
       auto am_block = A_stab.block<2, 2>(0, 2 * (m_C + j_Max_C + j));
       am_block << 0.0, 1.0, -1.0, 0.0;
       am_block /= (m_mass * CoM_height[j] * std::pow(eta_j, 2));
-      am_block *= std::exp(-eta_j * t) * (1.0 - std::exp(-eta_j * duration));
+      // exp(-eta_j * t) above was using an absolute clock t accumulated via "duration"; replace with
+      // the cumulative integral up to the start of this AM contribution window for consistency.
+      am_block *= std::exp(-integrated_eta_to[j]) * (1.0 - std::exp(-eta_j * duration));
       t += duration;
       duration = m_delta;
     }
   }
 
-  // Time-Varying Fix: Apply initial step eta for boundary propagation
+  // Delay correction: this interval [t_global, t_global + m_delay_elapsed] is in the past/present
+  // relative to the horizon start t_k, so using the instantaneous current eta_0 here is correct
+  // (there is no future time-varying profile to integrate over yet).
   const double eta_0 = m_eta[0];
   A_stab.block(0, 0, 2, 2 * m_C) *= std::exp(-eta_0 * m_delay_elapsed);
 
-  // Time-Varying Fix: Initial DCM calculation relies on current eta_0
   P_u_k = P_c_k + (V_c_k / eta_0);
-  
+
   b_stab = P_u_k.head<2>();
-  
+
   const double e_d_l_p_e_0 = (eta_0 / (m_lambda + eta_0));
-  
+
   b_stab -= m_kappa
             * (U_k * (1.0 - std::exp(-eta_0 * m_delay_elapsed))
                + e_d_l_p_e_0 * (P_z_k - U_k) * (1.0 - std::exp(-(eta_0 + m_lambda) * m_delay_elapsed)))
@@ -1299,7 +1310,7 @@ void ISMPC_Solver::Stability_Constraints()
 
   b_stab -= std::exp(-eta_0 * m_delay_elapsed) * P_z_k_delayed.head<2>()
             * (m_kappa * (1.0 - std::exp(-eta_0 * perturbation_duration)) + m_kappa_inf * std::exp(-eta_0 * perturbation_duration));
-            
+
   b_stab -= -(w_k * (1.0 - std::exp(-eta_0 * (perturbation_duration + m_delay_elapsed)))
               + w_k_inf * std::exp(-eta_0 * (perturbation_duration + m_delay_elapsed)))
                  .head<2>();
@@ -1342,14 +1353,24 @@ void ISMPC_Solver::Compute_Stability_Range()
 
 void ISMPC_Solver::Compute_Standing_Stability_Range()
 {
-  // Time-Varying Fix: Standing viability contraction uses the instantaneous initial parameter value
-  const double eta_0 = m_eta[0];
-  const double contraction_factor = std::exp(-eta_0 * 3.0 * m_delta);
+  // Time-Varying Fix: integrate eta over the next 3 steps of the horizon rather than
+  // assuming the instantaneous eta_0 holds constant over that whole window.
+  const int n_steps = std::min(3, m_C);
+  double integrated = 0.0;
+  for(int k = 0; k < n_steps; ++k)
+  {
+    integrated += m_eta[k] * m_delta;
+  }
+  // If m_C < 3 (very short horizon), extend using the last available eta as a fallback.
+  if(n_steps < 3 && n_steps > 0)
+  {
+    integrated += m_eta[n_steps - 1] * m_delta * static_cast<double>(3 - n_steps);
+  }
+  const double contraction_factor = std::exp(-integrated);
 
-  // Use fixed-size head segment for fast projection computation
   Eigen::VectorXd offset = m_double_support_polygon.normals() * P_z_k.head<2>() * (1.0 - contraction_factor)
                            + m_double_support_polygon.offsets() * contraction_factor;
-                           
+
   m_feasibility_standing_region = SupportPolygon(m_double_support_polygon.normals(), offset);
 }
 
@@ -1387,7 +1408,7 @@ void ISMPC_Solver::Integrate()
   m_Y_MPC.clear();
   int N = (int)(m_delta / m_delta_control);
   int N_delay = static_cast<int>(m_delay_elapsed / m_delta_control);
-  
+
   // Time-Varying Fix: Baseline starts with the instantaneous state parameter value
   double eta = m_eta[0];
   double kappa = m_kappa;
@@ -1403,9 +1424,14 @@ void ISMPC_Solver::Integrate()
   Eigen::Vector2d Lc_dot_comp;
   Lc_dot_comp << -m_Ldot_c(m_C), m_Ldot_c(0);
   Lc_dot_comp /= (m_mass * std::pow(eta, 2) * CoM_height[0]);
-  
+
   Eigen::Vector2d Pzi = (kappa * P_z_k.head<2>() - w - Lc_dot_comp);
   Eigen::Vector2d zmp_ref = kappa * U_k.head<2>() - w - Lc_dot_comp;
+
+  // Time-Varying Fix: the homogeneous propagation matrix Integration_Mat must reflect the eta
+  // applicable to *this* sub-stepping window. It was previously left stale from construction time
+  // (built only from eta[0] once). Recompute it here before this loop using the current eta.
+  Compute_Integration_Matrix(std::vector<double>{eta});
 
   for(int k = 0; k < N_delay; k++)
   {
@@ -1429,6 +1455,10 @@ void ISMPC_Solver::Integrate()
   {
     // Time-Varying Fix: Update eta dynamically to track the changing vertical profile
     eta = m_eta[i];
+    // Time-Varying Fix: Integration_Mat must be rebuilt for this step's eta before propagating
+    // state across this step's N sub-samples. Without this, the homogeneous dynamics silently
+    // keep using whichever eta was applicable to a previous (or the very first) step.
+    Compute_Integration_Matrix(std::vector<double>{eta});
 
     if(static_cast<double>(i) * m_delta == perturbation_duration)
     {
@@ -1439,7 +1469,7 @@ void ISMPC_Solver::Integrate()
       w = w_k_inf.head<2>();
       kappa = m_kappa_inf;
     }
-    
+
     Lc_dot_comp << -m_Ldot_c(i + m_C), m_Ldot_c(i);
     Lc_dot_comp /= (m_mass * std::pow(eta, 2) * CoM_height[i]);
 
@@ -1813,4 +1843,17 @@ bool ISMPC_Solver::GetWalkingParameters(bool stop)
     Integrate();
   }
   return true;
+}
+
+Eigen::VectorXd ISMPC_Solver::solveQP()
+{
+
+  int Nvar = static_cast<int>(m_Q.rows());
+  int NIneqConstr = static_cast<int>(Aineq.rows());
+  int NEqConstr = static_cast<int>(Aeq.rows());
+  // QP.tolerance(1e-3);
+  QP.problem(Nvar, NEqConstr, NIneqConstr);
+  QPsuccess = QP.solve(m_Q, m_p, Aeq, beq, Aineq, bineq);
+
+  return QP.result();
 }

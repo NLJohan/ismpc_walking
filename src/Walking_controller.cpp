@@ -207,6 +207,9 @@ Walking_controller::Walking_controller(mc_rbdyn::RobotModulePtr rm,
   solver().addTask(rightSwingFootTask);
   solver().addTask(momentumTask);
   updateTasks();
+  // --- CoM target logging for mc_log_ui comparison with com_jvrc1_pos_z ---
+  logger().addLogEntry("com_target_pos", this,
+    [this]() -> const Eigen::Vector3d & { return p_com_logged_; });
   deactivate();
   mc_rtc::log::success("ismpc_walking controller init done ");
   if(autoStart)
@@ -375,6 +378,10 @@ void Walking_controller::ComputeWalkingTrajectory()
     mpc_thread_state.FeasibilityPolygonStandingSwitch = MPCSolver.feasibility_region_switched();
     mpc_thread_state.X_MPC = MPCSolver.X_MPC();
     mpc_thread_state.Y_MPC = MPCSolver.Y_MPC();
+    // Time-Varying Fix: CoM_height and eta_vec must be refreshed in lockstep with X_MPC/Y_MPC,
+    // since Get_CoM_planarTarget(indx) and getEta(indx) index into all three with the same indx.
+    mpc_thread_state.CoM_height = MPCSolver.CoM_height_vec();
+    mpc_thread_state.eta_vec = MPCSolver.eta_vec();
     mpc_thread_state.Index = 1 + static_cast<int>(mpc_thread_process_time * 1e-3 / controller_timestep);
     mpc_thread_state.SupPolygon = MPCSolver.get_polynome_support();
     mpc_thread_state.Traj_ant = MPCSolver.GetAfterTc_ZMP_trajectory();
@@ -481,7 +488,7 @@ void Walking_controller::CheckStepRecovery()
     Eigen::MatrixX2d normals = MPCSolver.standing_feasibility_polygone().normals();
     Eigen::VectorXd offset = MPCSolver.standing_feasibility_polygone().offsets();
     Eigen::Vector2d dcm =
-        (realRobot().com() + (realRobot().comVelocity() / mpc_state_.eta)).segment(0, 2) + stabTask->biasDCM();
+        (realRobot().com() + (realRobot().comVelocity() / mpc_state_.getEta(0))).segment(0, 2) + stabTask->biasDCM();
     Eigen::VectorXd stability_check = normals * dcm - offset;
     bool ok = true;
     for(int i = 0; i < stability_check.rows(); i++)
@@ -721,10 +728,14 @@ void Walking_controller::MoveCoM()
   }
 
   Eigen::Vector3d p_com(mpc_state_.Get_CoM_planarTarget(mpc_state_.Index));
-  p_com.z() = controller_config_.stab_config.comHeight + 1 * X_0_support.translation().z();
+  // Time-Varying Fix: p_com.z() now comes from mpc_state_.Get_CoM_planarTarget's z component
+  // (which reads mpc_state_.CoM_height[Index], populated from the solver's time-varying
+  // CoM_height vector) instead of being hardcoded to the constant comHeight. The support-foot
+  // and swing-foot z offsets are preserved, now added on top of the time-varying value.
+  p_com.z() += X_0_support.translation().z();
   if(!doubleSupport_state && swing_foot_contact)
   {
-    p_com.z() = controller_config_.stab_config.comHeight + robot().surfacePose(swingFootName).translation().z();
+    p_com.z() = mpc_state_.Get_CoM_planarTarget(mpc_state_.Index).z() + robot().surfacePose(swingFootName).translation().z();
   }
   Eigen::Vector3d Vc(mpc_state_.Get_CoMVel_planarTarget(mpc_state_.Index));
   Vc.z() = 0;
@@ -735,6 +746,10 @@ void Walking_controller::MoveCoM()
   const int n = static_cast<int>(controller_config_.delta / controller_timestep);
 
   // mc_rtc::log::info("//Index : {}, z_y {}",mpc_state_.Index,zmpTarget.y());
+
+  // Time-Varying Fix: eta applicable to this control sample is the one at the current horizon
+  // index, not the stale/global mpc_state_.eta. Use the same Index as p_com/Vc/zmpTarget above.
+  const double eta_now = mpc_state_.getEta(static_cast<size_t>(mpc_state_.Index));
 
   Eigen::Vector3d deltaLc = Eigen::Vector3d::Zero(); // offset to the acc ref to account for Lcd;
   if(UseAngularMomentum)
@@ -751,14 +766,16 @@ void Walking_controller::MoveCoM()
     momentumTask->refAccel(target.vector());
 
     deltaLc << -lc_dot_target.y(), lc_dot_target.x(), 0.;
-    deltaLc /= (robot().mass() * controller_config_.stab_config.comHeight);
+    // Time-Varying Fix: use the time-varying CoM height at the current index, not the constant
+    // controller_config_.stab_config.comHeight, for consistency with the variable-height model.
+    deltaLc /= (robot().mass() * p_com.z());
   }
   else
   {
     momentumTask->weight(0);
   }
 
-  Eigen::Vector3d acc_com = std::pow(mpc_state_.eta, 2) * (mpc_state_.p_c_k - zmpTarget) + deltaLc;
+  Eigen::Vector3d acc_com = std::pow(eta_now, 2) * (mpc_state_.p_c_k - zmpTarget) + deltaLc;
   acc_com.z() = 0;
   admittanceTarget = mpc_state_.delayed_zmp_ + mpc_state_.get_u(0);
   admittanceTarget.z() = 0;
@@ -781,7 +798,7 @@ void Walking_controller::MoveCoM()
     updateAdmittance = false;
   }
 
-  Eigen::Vector3d acc_wrench = std::pow(mpc_state_.eta, 2) * (mpc_state_.p_c_k - admittanceTarget) + deltaLc;
+  Eigen::Vector3d acc_wrench = std::pow(eta_now, 2) * (mpc_state_.p_c_k - admittanceTarget) + deltaLc;
   acc_wrench.z() = 0;
 
   target_force_ = robot().mass() * (acc_com + mc_rtc::constants::gravity);
@@ -798,6 +815,7 @@ void Walking_controller::MoveCoM()
     p_com.segment(0, 2) = sva::interpolate(robot().surfacePose(leftFootName_), robot().surfacePose(rightFootName_), 0.5)
                               .translation()
                               .segment(0, 2);
+    p_com.z() = controller_config_.stab_config.comHeight + X_0_support.translation().z();
     Vc.setZero();
     acc_com.setZero();
     if(!active)
@@ -810,6 +828,7 @@ void Walking_controller::MoveCoM()
       lc_dot_target.setZero();
     }
   }
+  p_com_logged_ = p_com;
   comTask->com(p_com);
   comTask->refVel(Vc);
   comTask->refAccel(acc_com);
@@ -840,7 +859,7 @@ void Walking_controller::UpdateInitialVectors()
     mpc_state_.v_c_k = Eigen::Vector3d::Zero();
     mpc_state_.p_c_k = debugCoM;
     mpc_state_.p_z_k = debugZMP;
-    mpc_state_.p_u = mpc_state_.p_c_k + mpc_state_.v_c_k / mpc_state_.eta;
+    mpc_state_.p_u = mpc_state_.p_c_k + mpc_state_.v_c_k / mpc_state_.getEta(static_cast<size_t>(mpc_state_.Index));
     mpc_state_.t_k = debugTk;
     mpc_state_.doubleSupport = debugDblSupp;
     return;
@@ -851,13 +870,13 @@ void Walking_controller::UpdateInitialVectors()
     mpc_state_.p_c_k = mpc_state_.Get_CoM_planarTarget(mpc_state_.Index);
     mpc_state_.v_c_k = mpc_state_.Get_CoMVel_planarTarget(mpc_state_.Index);
     mpc_state_.p_z_k = mpc_state_.Get_ZMP_planarTarget(mpc_state_.Index);
-    mpc_state_.p_u = mpc_state_.p_c_k + mpc_state_.v_c_k / mpc_state_.eta;
+    mpc_state_.p_u = mpc_state_.p_c_k + mpc_state_.v_c_k / mpc_state_.getEta(static_cast<size_t>(mpc_state_.Index));
   }
   else
   {
     mpc_state_.p_c_k = robot().com();
     mpc_state_.v_c_k = robot().comVelocity();
-    mpc_state_.p_u = mpc_state_.p_c_k + mpc_state_.v_c_k / mpc_state_.eta;
+    mpc_state_.p_u = mpc_state_.p_c_k + mpc_state_.v_c_k / mpc_state_.getEta(static_cast<size_t>(mpc_state_.Index));
   }
   if(UseRealRobot)
   {
@@ -880,11 +899,13 @@ void Walking_controller::UpdateInitialVectors()
 
     mpc_state_.v_c_k = realRobot().comVelocity();
     mpc_state_.ComBias.segment(0, 2) = stabTask->biasDCM();
+    // Time-Varying Fix: realRobot().com() carries the robot's actual measured z, which is
+    // physically meaningful and must NOT be overwritten with the constant comHeight below.
     mpc_state_.p_c_k = realRobot().com() + mpc_state_.ComBias;
     const sva::PTransformd X_0_c = sva::PTransformd(mpc_state_.p_c_k);
     measured_wrench_ = X_0_c.dualMul(measured_net_wrench);
 
-    mpc_state_.p_u = mpc_state_.p_c_k + mpc_state_.v_c_k / mpc_state_.eta;
+    mpc_state_.p_u = mpc_state_.p_c_k + mpc_state_.v_c_k / mpc_state_.getEta(static_cast<size_t>(mpc_state_.Index));
     if(controller_config_.stab_config.dcmBias.withDCMFilter)
     {
       mpc_state_.p_u.segment(0, 2) = -stabTask->filteredDCM();
@@ -916,7 +937,15 @@ void Walking_controller::UpdateInitialVectors()
 
   // eta2_cstr = (mc_rtc::constants::GRAVITY/controller_config_.stab_config.comHeight);
 
-  mpc_state_.p_c_k.z() = controller_config_.stab_config.comHeight;
+  // Time-Varying Fix: p_c_k.z() used to be unconditionally hardcoded to the constant comHeight here,
+  // which silently overwrote both the time-varying MPC target (from Get_CoM_planarTarget, branch above)
+  // and the actual measured robot CoM z (from realRobot().com(), UseRealRobot branch above).
+  // We now only fall back to the constant comHeight when no MPC trajectory exists yet (cold start /
+  // not walking) and we are not using the real robot's measured z.
+  if(!UseRealRobot && !(UseMPCState && mpc_state_.X_MPC.size() != 0))
+  {
+    mpc_state_.p_c_k.z() = controller_config_.stab_config.comHeight;
+  }
   mpc_state_.v_c_k.z() = 0;
   mpc_state_.p_z_k.z() = 0;
 

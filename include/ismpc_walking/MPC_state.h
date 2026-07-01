@@ -10,7 +10,12 @@ struct MPC_state
   {
     if(indx < X_MPC.size())
     {
-      return Eigen::Vector3d{X_MPC[indx][0], Y_MPC[indx][0], 0};
+      // Time-Varying Fix: z used to be hardcoded to 0 here, silently discarding any
+      // time-varying CoM height trajectory computed by the solver. CoM_height must be
+      // populated (same indexing/size as X_MPC/Y_MPC) by the controller from
+      // ISMPC_Solver::CoM_height_vec() every time X_MPC/Y_MPC are refreshed.
+      const double z = (indx < CoM_height.size()) ? CoM_height[indx] : default_CoM_height;
+      return Eigen::Vector3d{X_MPC[indx][0], Y_MPC[indx][0], z};
     }
     std::cout << "[CoM access] Warning wrong index returning 0 vector" << std::endl;
     return Eigen::Vector3d::Zero();
@@ -134,6 +139,20 @@ struct MPC_state
     return p_c_k + v_c_k / eta;
   }
 
+  /**
+   * Returns the pendulum frequency eta applicable at horizon index indx.
+   * Falls back to the scalar `eta` member (current-step value) if eta_vec is empty
+   * or indx is out of range, e.g. before the first MPC solve has populated it.
+   */
+  double getEta(size_t indx) const
+  {
+    if(indx < eta_vec.size())
+    {
+      return eta_vec[indx];
+    }
+    return eta;
+  }
+
   Eigen::Vector3d get_u(int indx)
   {
     if(indx / 2 >= mpc_u_.size())
@@ -160,6 +179,13 @@ struct MPC_state
       X_MPC; // Contain 3d vectors that represents in that order the CoM the CoMd and the ZMP for each timestep
   std::vector<Eigen::Vector3d>
       Y_MPC; // Contain 3d vectors that represents in that order the CoM the CoMd and the ZMP for each timestep
+  // Time-Varying Fix: per-horizon-step CoM height z_c(t), same indexing/size as X_MPC/Y_MPC.
+  // Must be populated from ISMPC_Solver::CoM_height_vec() every time X_MPC/Y_MPC are refreshed.
+  std::vector<double> CoM_height;
+  double default_CoM_height = 0.78; // fallback only, used if CoM_height is unpopulated/out of range
+  // Time-Varying Fix: per-horizon-step pendulum frequency, same indexing/size as X_MPC/Y_MPC.
+  // Must be populated from ISMPC_Solver::eta_vec() every time X_MPC/Y_MPC are refreshed.
+  std::vector<double> eta_vec;
   std::vector<Eigen::Vector3d> SupPolygon;
   std::vector<Eigen::Vector3d> FeasibilityPolygon;
   SupportPolygon FeasibilityPolygonStandingSwitch; // standing feasibility region if support foot is switched

@@ -207,6 +207,24 @@ public:
   }
 
   /**
+   * Returns the per-horizon-step pendulum frequency vector (Smaldone-style time-varying eta).
+   * eta()[0] is equivalent to the legacy scalar eta() accessor above.
+   */
+  const std::vector<double> & eta_vec() const noexcept
+  {
+    return m_eta;
+  }
+
+  /**
+   * Returns the per-horizon-step CoM height trajectory z_c(t) computed by the solver
+   * (e.g. the hand-crafted sigmoid/sinusoid profile, later to be replaced by NN output).
+   */
+  const std::vector<double> & CoM_height_vec() const noexcept
+  {
+    return CoM_height;
+  }
+
+  /**
    * Returns the initial DCM used in the MPC in the world frame
    */
   const Eigen::Vector3d & Puk() const noexcept
@@ -589,6 +607,9 @@ private:
    */
   bool Slide_ZMP_region = false;
 
+  // Define trajectory constants for testing (e.g., zc = z0 + A*sin(b*t)) 
+  double A = 0.05; // 5 cm amplitude variation
+  double b = 0.5 * 2 * M_PI; // 1 Hz frequency
   std::vector<double> m_eta; // Prendulum frequency
   std::vector<double> m_eta_free; // Prendulum frequency disturbance free
   std::vector<double> CoM_height; 
