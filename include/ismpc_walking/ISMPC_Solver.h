@@ -610,8 +610,8 @@ private:
   std::vector<double> m_eta; // Prendulum frequency
   std::vector<double> m_eta_free; // Prendulum frequency disturbance free
   std::vector<double> CoM_height;
-  double CoM_height_avg = 0.85;
-  double m_com_z_amplitude = 0.05; // Amplitude of the CoM height oscillation (metres)
+  double CoM_height_avg = 0.70;
+  double m_com_z_amplitude = 0.15; // Amplitude of the CoM height oscillation (metres)
   // Elapsed time since the start of the current step cycle, used to compute
   // the phase-based CoM height profile. Reset to 0 at each step switch.
   double m_tk_within_step = 0.0;
