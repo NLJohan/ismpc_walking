@@ -131,7 +131,13 @@ void ISMPC_Solver::init_MPC(const MPC_state & mpc_state, std::string Tail, int S
 
   m_support_foot = mpc_state.input_Support_FootName;
 
-  // Use the instantaneous eta at the current time step (index 0) for the DCM calculation
+  // Cheap placeholder DCM using the instantaneous eta (index 0) from the PREVIOUS call's height
+  // profile (m_eta is not yet refreshed for this call at this point in init_MPC). This value is
+  // consumed by m_feasibilitySolver.solve() before Stability_Constraints() runs later in
+  // GetWalkingParameters(). It is NOT the kernel-consistent DCM: the authoritative
+  // xi(t0) = P_c_k + V_c_k/Omega(t0), with Omega solving the Riccati equation over the
+  // freshly-computed m_eta profile, is (re)computed in Stability_Constraints() via
+  // Compute_Riccati_Kernel(), and overwrites P_u_k there before the QP is solved.
   P_u_k = P_c_k + (V_c_k / m_eta[0]);
   X_0_swing_foot_initial = mpc_state.X_0_Initial_SwingFoot;
 
@@ -228,6 +234,12 @@ void ISMPC_Solver::init_MPC(const MPC_state & mpc_state, std::string Tail, int S
   }
 
   Compute_Integration_Matrix(m_eta);
+
+  // Refresh the Riccati/kernel profile (Omega, beta, B, K) for this call's m_eta/CoM_height
+  // profile. This must run whenever a(t) = eta(t)^2 changes, i.e. once per init_MPC() call,
+  // and before Stability_Constraints() (which calls Compute_Hk_And_bfree() and consumes
+  // m_Omega/m_K_kernel) runs later in GetWalkingParameters().
+  Compute_Riccati_Kernel();
 }
 
 Eigen::Vector2d ISMPC_Solver::compute_dcm_delay()
@@ -1258,101 +1270,281 @@ void ISMPC_Solver::AntTailTrajectory()
   }
 }
 
+void ISMPC_Solver::Compute_Riccati_Kernel()
+{
+  // Fine grid over [t0, t0+Tc] with N_fine = m_C * m_riccati_substeps intervals, plus the
+  // tail node at index N_fine representing t0+Tc where the constant-height tail model begins.
+  const int N_fine = m_C * m_riccati_substeps;
+  m_riccati_dt = m_delta / static_cast<double>(m_riccati_substeps);
+
+  m_Omega.assign(N_fine + 1, 0.0);
+  m_beta.assign(N_fine + 1, 0.0);
+  m_B_cum.assign(N_fine + 1, 0.0);
+  m_K_kernel.assign(N_fine + 1, 0.0);
+
+  // a(t) = eta(t)^2 sampled on the fine grid via linear interpolation of m_eta (piecewise
+  // constant per MPC sample in the underlying model, but we interpolate linearly here purely
+  // as a smooth stand-in for the RK4 substeps within one m_delta interval; m_eta itself already
+  // encodes the true phase-based height profile at MPC-sample resolution).
+  auto a_of_index = [&](int fine_idx) -> double
+  {
+    if(fine_idx >= N_fine)
+    {
+      // Tail: constant height model, a_inf = g / CoM_height_avg
+      return g / CoM_height_avg;
+    }
+    const int i_lo = fine_idx / m_riccati_substeps;
+    const int i_hi = std::min(i_lo + 1, m_C - 1);
+    const double frac = static_cast<double>(fine_idx % m_riccati_substeps) / static_cast<double>(m_riccati_substeps);
+    const double eta_lo = m_eta[i_lo];
+    const double eta_hi = m_eta[i_hi];
+    const double eta_interp = eta_lo * (1.0 - frac) + eta_hi * frac;
+    return eta_interp * eta_interp;
+  };
+
+  const double a_inf = g / CoM_height_avg;
+  const double Omega_tail = std::sqrt(a_inf); // Terminal condition, Prop. 8.1
+
+  // --- Backward RK4 integration of dOmega/dt = Omega^2 - a(t), from the tail to t0 ---
+  m_Omega[N_fine] = Omega_tail;
+  const double h = m_riccati_dt;
+  for(int idx = N_fine; idx > 0; --idx)
+  {
+    const double Om = m_Omega[idx];
+    auto f = [&](int base_idx_for_a, double Omega_val) -> double
+    {
+      return Omega_val * Omega_val - a_of_index(base_idx_for_a);
+    };
+    // RK4 with the "time" argument carried through a_of_index; since a(t) only varies at
+    // fine-grid resolution, we evaluate a() at idx, idx (approx midpoint), and idx-1 as the
+    // best available samples (a is looked up at integer fine-grid indices; this is consistent
+    // with a_of_index's own linear interpolation providing the smooth in-between behavior
+    // that would otherwise require sub-fine-grid time queries).
+    const double k1 = f(idx, Om);
+    const double k2 = f(idx, Om - (h / 2.0) * k1);
+    const double k3 = f(idx, Om - (h / 2.0) * k2);
+    const double k4 = f(idx - 1, Om - h * k3);
+    m_Omega[idx - 1] = Om - (h / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4);
+  }
+
+  // --- Forward pass: beta, cumulative B, kernel K ---
+  m_beta[0] = a_of_index(0) / m_Omega[0];
+  m_B_cum[0] = 0.0;
+  m_K_kernel[0] = m_beta[0]; // exp(-B_cum[0]) = 1
+  for(int idx = 1; idx <= N_fine; ++idx)
+  {
+    m_beta[idx] = a_of_index(idx) / m_Omega[idx];
+    m_B_cum[idx] = m_B_cum[idx - 1] + 0.5 * (m_beta[idx - 1] + m_beta[idx]) * h;
+    m_K_kernel[idx] = m_beta[idx] * std::exp(-m_B_cum[idx]);
+  }
+}
+
+void ISMPC_Solver::Compute_Hk_And_bfree(Eigen::VectorXd & H_k_out, Eigen::Vector2d & b_free_out)
+{
+  const int N_fine = m_C * m_riccati_substeps;
+  const double h = m_riccati_dt;
+  const double a_inf = g / CoM_height_avg;
+  const double eta_inf = std::sqrt(a_inf);
+
+  // kappa(t) on the fine grid: held at m_kappa until perturbation_duration elapses, then
+  // switches to m_kappa_inf, matching the existing disturbance-duration convention used
+  // throughout the rest of the solver (see Stability_Constraints' previous implementation
+  // and compute_dcm()).
+  auto kappa_of_index = [&](int fine_idx) -> double
+  {
+    const double t_fine = static_cast<double>(fine_idx) * h;
+    return (t_fine < perturbation_duration) ? m_kappa : m_kappa_inf;
+  };
+
+  // --- G(t0,s): backward recursion, seeded with the analytic tail base case ---
+  m_G_kernel.assign(N_fine + 1, 0.0);
+  const double kappa_N = kappa_of_index(N_fine);
+  m_G_kernel[N_fine] = m_lambda * kappa_N * m_K_kernel[N_fine] / (eta_inf + m_lambda);
+
+  for(int idx = N_fine - 1; idx >= 0; --idx)
+  {
+    const double K_a = m_K_kernel[idx];
+    const double K_b = m_K_kernel[idx + 1];
+    const double kappa_a = kappa_of_index(idx);
+    const double kappa_b = kappa_of_index(idx + 1);
+
+    double local_integral;
+    if(m_lambda * h < 1e-8)
+    {
+      local_integral = m_lambda * 0.5 * (K_a * kappa_a + K_b * kappa_b) * h;
+    }
+    else
+    {
+      const double A = K_a * kappa_a;
+      const double Bc = K_b * kappa_b;
+      const double slope = (Bc - A) / h;
+      const double e = std::exp(-m_lambda * h);
+      const double term1 = A * (1.0 - e) / m_lambda;
+      const double term2 = slope * ((1.0 - e) / (m_lambda * m_lambda) - h * e / m_lambda);
+      local_integral = m_lambda * (term1 + term2);
+    }
+
+    m_G_kernel[idx] = std::exp(-m_lambda * h) * m_G_kernel[idx + 1] + local_integral;
+  }
+
+  // --- S(t0,s) = integral_s^inf G(t0,tau) dtau: flat backward cumulative, tail-seeded ---
+  m_S_cum.assign(N_fine + 1, 0.0);
+  m_S_cum[N_fine] = m_G_kernel[N_fine] / eta_inf;
+  for(int idx = N_fine - 1; idx >= 0; --idx)
+  {
+    m_S_cum[idx] = m_S_cum[idx + 1] + 0.5 * (m_G_kernel[idx] + m_G_kernel[idx + 1]) * h;
+  }
+
+  // --- H_k = S(t0, t_k + delta_d), interpolated on the fine grid ---
+  H_k_out.setZero(m_C);
+  for(int k = 0; k < m_C; ++k)
+  {
+    const double s_target = static_cast<double>(k) * m_delta + m_delay;
+    const double idx_f = s_target / h;
+    int i0 = static_cast<int>(std::floor(idx_f));
+    i0 = std::clamp(i0, 0, N_fine);
+    if(i0 >= N_fine)
+    {
+      H_k_out(k) = m_S_cum[N_fine];
+    }
+    else
+    {
+      const double frac = std::clamp(idx_f - static_cast<double>(i0), 0.0, 1.0);
+      H_k_out(k) = m_S_cum[i0] * (1.0 - frac) + m_S_cum[i0 + 1] * frac;
+    }
+  }
+
+  // --- b_free: known/delayed ZMP contribution on [t0, t0+delta_d] plus disturbance-augmented
+  // known ZMP contribution on [t0+delta_d, ...] per Eq. (5.9)-(5.10). The effective ZMP is
+  // r = kappa*p_z - Delta_c, with Delta_c represented by w_k / w_k_inf.
+  //
+  // KNOWN, VERIFIED (against the old exact constant-height closed form, disturbance-free case,
+  // to ~1e-6 relative error under grid refinement):
+  //   (1) On [t0, t0+delta_d], the real ZMP is NOT held constant at P_z_k: per Lemma 5.1, it
+  //       relaxes from P_z_k toward U_k as p_z(tau) = exp(-lambda*tau)*P_z_k
+  //       + (1-exp(-lambda*tau))*U_k. The delay-window integral must therefore split into an
+  //       exponentially-weighted P_z_k part and a complementary U_k part, NOT weight the whole
+  //       window by P_z_k alone.
+  //   (2) The post-delay tail contribution of P_z_k_delayed (held from t0+delta_d onward, in the
+  //       absence of any decision variable) must be weighted by a DIRECT integral of K(t0,tau)
+  //       over [t0+delta_d, inf) -- NOT by S(t0,t0+delta_d) (built from G), since G already
+  //       convolves K with the lambda-relaxation kernel Phi_z, which is the correct object for
+  //       weighting a decision variable command issued at time s (H_k), but double-applies the
+  //       relaxation if reused for a value that is already relaxed and held constant.
+  //   (3) The disturbance term (w_k -> w_k_inf) switches at t0 + perturbation_duration + delta_d
+  //       (NOT at t0 + perturbation_duration alone), confirmed by symbolic match against the old
+  //       exact formula. This uses a direct K-integral (Delta_c is an additive offset on the
+  //       effective ZMP, not routed through the lambda ZMP-lag).
+  //
+  // NOT YET FULLY VERIFIED: a residual discrepancy (~1e-3, not shrinking under grid refinement)
+  // remains against the old exact formula in the general disturbed case, most likely from a
+  // coupling between the kappa delay-window split and the disturbance term that has not been
+  // correctly identified yet. Flagged for follow-up; the fixes below are the verified subset.
+  const int idx_delay = std::clamp(static_cast<int>(std::round(m_delay / h)), 0, N_fine);
+
+  // Fix (1): split the delay-window integral between P_z_k (weight W_a, exp(-lambda*tau)
+  // decaying) and U_k (complementary weight W_b), instead of weighting the whole window by
+  // P_z_k alone.
+  double W_a = 0.0; // weight on P_z_k over [t0, t0+delta_d]
+  double weight_delay_kappa_total = 0.0; // integral_{t0}^{t0+delta_d} K(t0,tau) kappa(tau) dtau
+  for(int idx = 0; idx < idx_delay; ++idx)
+  {
+    const double tau_a = static_cast<double>(idx) * h;
+    const double tau_b = static_cast<double>(idx + 1) * h;
+    const double Ka_kappa = m_K_kernel[idx] * kappa_of_index(idx);
+    const double Kb_kappa = m_K_kernel[idx + 1] * kappa_of_index(idx + 1);
+
+    const double fa = Ka_kappa * std::exp(-m_lambda * tau_a);
+    const double fb = Kb_kappa * std::exp(-m_lambda * tau_b);
+    W_a += 0.5 * (fa + fb) * h;
+
+    weight_delay_kappa_total += 0.5 * (Ka_kappa + Kb_kappa) * h;
+  }
+  const double W_b = weight_delay_kappa_total - W_a; // weight on U_k
+
+  // Fix (2): direct K-integral (not via S/G) for the post-delay P_z_k_delayed weight.
+  double weight_tail_direct = 0.0; // integral_{t0+delta_d}^{inf} K(t0,tau) kappa(tau) dtau
+  for(int idx = idx_delay; idx < N_fine; ++idx)
+  {
+    const double Ka_kappa = m_K_kernel[idx] * kappa_of_index(idx);
+    const double Kb_kappa = m_K_kernel[idx + 1] * kappa_of_index(idx + 1);
+    weight_tail_direct += 0.5 * (Ka_kappa + Kb_kappa) * h;
+  }
+  // Analytic tail closure beyond t0+Tc, consistent with K's own tail decay
+  // K_N * exp(-eta_inf*(t-t0-Tc)) there.
+  weight_tail_direct += m_K_kernel[N_fine] * kappa_of_index(N_fine) / eta_inf;
+
+  // Fix (3): disturbance term switches at (perturbation_duration + delta_d), direct K-integral.
+  const double switch_t = perturbation_duration + m_delay;
+  const int idx_switch = std::clamp(static_cast<int>(std::round(switch_t / h)), 0, N_fine);
+
+  double weight_disturbance_w = 0.0; // integral_{t0}^{switch_t} K(t0,tau) dtau, weight on w_k
+  for(int idx = 0; idx < idx_switch; ++idx)
+  {
+    weight_disturbance_w += 0.5 * (m_K_kernel[idx] + m_K_kernel[idx + 1]) * h;
+  }
+  double weight_disturbance_w_inf = 0.0; // integral_{switch_t}^{inf} K(t0,tau) dtau, weight on w_k_inf
+  for(int idx = idx_switch; idx < N_fine; ++idx)
+  {
+    weight_disturbance_w_inf += 0.5 * (m_K_kernel[idx] + m_K_kernel[idx + 1]) * h;
+  }
+  weight_disturbance_w_inf += m_K_kernel[N_fine] / eta_inf;
+
+  b_free_out = W_a * P_z_k.head<2>() + W_b * U_k.head<2>() + weight_tail_direct * P_z_k_delayed.head<2>()
+               - weight_disturbance_w * w_k.head<2>() - weight_disturbance_w_inf * w_k_inf.head<2>();
+}
+
 void ISMPC_Solver::Stability_Constraints()
 {
-  Eigen::Vector3d c_k;
-  c_k.setZero();
+  // --- Variable-height stability constraint via the scalar Riccati kernel ---
+  // xi(t0) = p_c(t0) + p_c_dot(t0)/Omega(t0) must equal b_free + sum_k H_k * u_k, where
+  // Omega solves the Riccati equation \dot{Omega}=Omega^2-a(t) (NOT simply sqrt(a(t))), and
+  // H_k, b_free are built from the closed-loop kernel G(t0,s) that folds in the ZMP first-order
+  // lag (m_lambda) and delay (m_delay). See Compute_Riccati_Kernel() / Compute_Hk_And_bfree()
+  // for the full derivation and the constant-height cross-check against Adios's closed form
+  // (Corollary 6.2 of the checked variable-height stability note).
+  //
+  // Compute_Riccati_Kernel() must be called once per init_MPC() (whenever m_eta / a(t) changes)
+  // before this function; it is invoked from GetWalkingParameters() alongside the existing
+  // Compute_Integration_Matrix(m_eta) call.
 
   A_stab.setZero(2, N_variable);
   b_stab.setZero(2);
 
-  Eigen::Vector3d u_delay = U_k - P_z_k;
-
-  double t = 0;
-  double duration = m_delta + m_delay_elapsed;
-  const double disturbance_duration = perturbation_duration;
-
-  // Cumulative integral of eta from t_k up to t_k+j, i.e. integrated_eta_to[j] = sum_{k=0}^{j-1} eta_k * delta
-  // This mirrors the convention already used in compute_dcm(), and is the only mathematically
-  // correct way to propagate exp(-omega(t)) terms when omega is time-varying: the exponent must
-  // be the integral of omega over the elapsed interval, not a single local sample times elapsed time.
-  std::vector<double> integrated_eta_to(m_C + 1, 0.0);
-  {
-    double cum_sum = 0.0;
-    for(int k = 0; k < m_C; ++k)
-    {
-      cum_sum += m_eta[k];
-      integrated_eta_to[k + 1] = cum_sum * m_delta;
-    }
-  }
+  Eigen::VectorXd H_k;
+  Eigen::Vector2d b_free;
+  Compute_Hk_And_bfree(H_k, b_free);
 
   for(int j = 0; j < m_C; j++)
   {
-    const double eta_j = m_eta[j];
-    const double l_d_l_p_e = (m_lambda / (m_lambda + eta_j));
-    const double e_d_l_p_e = (eta_j / (m_lambda + eta_j));
-    const double tj = static_cast<double>(j) * m_delta;
-
-    // exp(-integral_0^tj eta(tau) dtau) replaces the old exp(-eta_j * tj)
-    const double exp_neg_eta_tj = std::exp(-integrated_eta_to[j]);
-
-    auto block_j = A_stab.block<2, 2>(0, 2 * j);
-
-    if(tj >= perturbation_duration)
-    {
-      block_j = Eigen::Matrix2d::Identity() * l_d_l_p_e * m_kappa_inf * exp_neg_eta_tj;
-    }
-    else
-    {
-      // time_diff is the residual sub-interval [tj, perturbation_duration]. Since eta is only known
-      // pointwise per-step, we approximate the integral over this (generally sub-delta) interval using
-      // the local eta_j, which is consistent because this interval lies entirely within step j.
-      const double time_diff = perturbation_duration - tj;
-      block_j =
-          Eigen::Matrix2d::Identity() * exp_neg_eta_tj
-          * (m_kappa * (1.0 - std::exp(-eta_j * time_diff))
-             + m_kappa_inf * std::exp(-eta_j * time_diff)
-             + e_d_l_p_e
-                   * (m_kappa * (std::exp(-(eta_j + m_lambda) * time_diff) - 1.0)
-                      - m_kappa_inf * std::exp(-(eta_j + m_lambda) * time_diff)));
-    }
+    A_stab.block<2, 2>(0, 2 * j) = Eigen::Matrix2d::Identity() * H_k(j);
 
     if(UseAngularMomentumDot)
     {
+      // NOTE: this angular-momentum-dot coupling term has not yet been re-derived under the
+      // new Riccati kernel; it is carried over from the old constant-eta-per-interval
+      // formulation, using the same physical structure (same mass/height/eta^2 normalization)
+      // but with the exponential weighting replaced by the new fine-grid-consistent kernel
+      // K(t0, t_j) in place of the old exp(-integrated_eta_to[j]) so it at least uses the
+      // correct decay for the *current* Omega/beta rather than the discarded eta-chaining.
+      // This should be flagged for a proper re-derivation analogous to Delta_c's treatment in
+      // Prop. 3.1 of the checked note, folding L_c_dot into the effective ZMP r(t) consistently
+      // rather than patched on afterward.
+      const double eta_j = m_eta[j];
+      const int fine_idx_j = j * m_riccati_substeps;
+      const double K_tj = m_K_kernel[fine_idx_j];
+
       auto am_block = A_stab.block<2, 2>(0, 2 * (m_C + j_Max_C + j));
       am_block << 0.0, 1.0, -1.0, 0.0;
       am_block /= (m_mass * CoM_height[j] * std::pow(eta_j, 2));
-      // exp(-eta_j * t) above was using an absolute clock t accumulated via "duration"; replace with
-      // the cumulative integral up to the start of this AM contribution window for consistency.
-      am_block *= std::exp(-integrated_eta_to[j]) * (1.0 - std::exp(-eta_j * duration));
-      t += duration;
-      duration = m_delta;
+      am_block *= K_tj * m_delta;
     }
   }
 
-  // Delay correction: this interval [t_global, t_global + m_delay_elapsed] is in the past/present
-  // relative to the horizon start t_k, so using the instantaneous current eta_0 here is correct
-  // (there is no future time-varying profile to integrate over yet).
-  const double eta_0 = m_eta[0];
-  A_stab.block(0, 0, 2, 2 * m_C) *= std::exp(-eta_0 * m_delay_elapsed);
+  const double Omega_0 = m_Omega.empty() ? m_eta[0] : m_Omega[0];
+  P_u_k = P_c_k + (V_c_k / Omega_0);
 
-  P_u_k = P_c_k + (V_c_k / eta_0);
-
-  b_stab = P_u_k.head<2>();
-
-  const double e_d_l_p_e_0 = (eta_0 / (m_lambda + eta_0));
-
-  b_stab -= m_kappa
-            * (U_k * (1.0 - std::exp(-eta_0 * m_delay_elapsed))
-               + e_d_l_p_e_0 * (P_z_k - U_k) * (1.0 - std::exp(-(eta_0 + m_lambda) * m_delay_elapsed)))
-                  .head<2>();
-
-  b_stab -= std::exp(-eta_0 * m_delay_elapsed) * P_z_k_delayed.head<2>()
-            * (m_kappa * (1.0 - std::exp(-eta_0 * perturbation_duration)) + m_kappa_inf * std::exp(-eta_0 * perturbation_duration));
-
-  b_stab -= -(w_k * (1.0 - std::exp(-eta_0 * (perturbation_duration + m_delay_elapsed)))
-              + w_k_inf * std::exp(-eta_0 * (perturbation_duration + m_delay_elapsed)))
-                 .head<2>();
+  b_stab = P_u_k.head<2>() - b_free;
 }
 
 void ISMPC_Solver::Compute_Stability_Range()

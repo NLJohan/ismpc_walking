@@ -216,6 +216,45 @@ public:
   }
 
   /**
+   * Returns Omega(t0), the solution at the start of the horizon of the scalar Riccati equation
+   * \dot{Omega} = Omega^2 - a(t), a(t) = eta(t)^2, integrated backward from the tail.
+   * This is NOT the same as eta()! eta(t0) = sqrt(a(t0)) is only the instantaneous frequency;
+   * Omega(t0) is the value that makes xi = p_c + p_c_dot/Omega exactly decouple the time-varying
+   * pendulum dynamics (see Stability_Constraints()). They coincide only when a(t) is constant.
+   */
+  double Omega_0() const noexcept
+  {
+    return m_Omega.empty() ? m_eta[0] : m_Omega[0];
+  }
+
+  /**
+   * Returns the full fine-grid Omega(t) profile computed by the last call to
+   * Compute_Riccati_Kernel(), sampled at spacing delta/riccati_substeps() over [t0, t0+Tc],
+   * plus the tail node. Exposed mainly for logging/debugging.
+   */
+  const std::vector<double> & Omega_vec() const noexcept
+  {
+    return m_Omega;
+  }
+
+  /**
+   * Number of Riccati/kernel integration sub-steps per MPC sample (m_delta).
+   * The Riccati equation and the K/G/H_k quadratures are evaluated on a fine grid of spacing
+   * m_delta / riccati_substeps(). Larger values improve the accuracy of the backward Riccati
+   * integration and of the kernel quadratures at the cost of more computation per QP iteration;
+   * tune this if real-time cost becomes an issue.
+   */
+  int riccati_substeps() const noexcept
+  {
+    return m_riccati_substeps;
+  }
+
+  void riccati_substeps(int n)
+  {
+    m_riccati_substeps = std::max(1, n);
+  }
+
+  /**
    * Returns the per-horizon-step CoM height trajectory z_c(t) computed by the solver
    * (e.g. the hand-crafted sigmoid/sinusoid profile, later to be replaced by NN output).
    */
@@ -529,6 +568,45 @@ private:
   void Compute_Integration_Matrix(const std::vector<double> & eta);
 
   /**
+   * @brief Backward-integrate the scalar Riccati equation \dot{Omega} = Omega^2 - a(t),
+   * a(t) = eta(t)^2, on a fine grid of spacing m_delta / m_riccati_substeps over
+   * [t0, t0 + m_Tc], then extend to a constant-height tail node.
+   *
+   * Fills m_riccati_grid_dt (uniform fine spacing), m_Omega, m_beta = a/Omega, and the
+   * cumulative divergence m_B_cum(i) = integral_{t0}^{t_i} beta. All four are sized
+   * N_fine + 1, where N_fine = m_C * m_riccati_substeps, with index N_fine corresponding
+   * to the tail node t0 + m_Tc.
+   *
+   * The tail (t > t0 + m_Tc) is assumed constant-height with a_inf = g / CoM_height_avg,
+   * matching the terminal condition Omega(t_f) = sqrt(a_inf) (Prop. 8.1 of the checked
+   * variable-height stability note). This backward solve must be redone whenever m_eta
+   * (hence a(t)) changes, i.e. once per init_MPC() call, before Stability_Constraints().
+   */
+  void Compute_Riccati_Kernel();
+
+  /**
+   * @brief Given the Omega/beta/B/K profile from Compute_Riccati_Kernel(), compute the
+   * closed-loop kernel G(t0,s) at every fine grid node via the O(N) backward recursion
+   *   G_i = exp(-lambda*h_i)*G_{i+1} + lambda * (local closed-form integral of K*kappa over
+   *   [t_i, t_{i+1}] against the exp(-lambda*(tau-t_i)) weight),
+   * seeded at the tail node with the analytic closed-form
+   *   G_N = lambda * kappa_inf * K_N / (sqrt(a_inf) + lambda),
+   * then the flat cumulative integral S_i = integral_{t_i}^{inf} G(t0,tau) dtau via
+   *   S_i = S_{i+1} + trapz(G_i, G_{i+1}), seeded at S_N = G_N / sqrt(a_inf).
+   * H_k is then S evaluated (interpolated) at t_k + delta_d for each decision variable k.
+   *
+   * Also assembles b_free (the part of the boundedness condition coming from the already
+   * decided/delayed ZMP on [t0, t0+delta_d] and the disturbance terms), per Eq. (5.9)-(5.10)
+   * and Prop 7.1 of the checked note.
+   *
+   * @param H_k_out size-m_C vector, H_k_out(k) is the scalar coefficient of decision
+   * variable u_k (applied identically on x and y) in the boundedness equality.
+   * @param b_free_out the disturbance-and-delay-corrected free term of the boundedness
+   * condition (2D, world/support frame consistent with P_u_k).
+   */
+  void Compute_Hk_And_bfree(Eigen::VectorXd & H_k_out, Eigen::Vector2d & b_free_out);
+
+  /**
    * Integrate The ZMP velocity to compute the CoM, CoMd and ZMP trajectory
    */
   void Integrate();
@@ -610,8 +688,19 @@ private:
   std::vector<double> m_eta; // Prendulum frequency
   std::vector<double> m_eta_free; // Prendulum frequency disturbance free
   std::vector<double> CoM_height;
-  double CoM_height_avg = 0.70;
-  double m_com_z_amplitude = 0.15; // Amplitude of the CoM height oscillation (metres)
+  double CoM_height_avg = 0.75;
+
+  // --- Variable-height Riccati stability kernel (Compute_Riccati_Kernel / Compute_Hk_And_bfree) ---
+  // All sized N_fine+1 with N_fine = m_C * m_riccati_substeps; index N_fine is the tail node at t0+Tc.
+  int m_riccati_substeps = 10; // Tunable: fine-grid substeps per m_delta for the Riccati/kernel integration
+  double m_riccati_dt = 0.0; // Fine grid spacing = m_delta / m_riccati_substeps, cached by Compute_Riccati_Kernel
+  std::vector<double> m_Omega; // Omega(t) solving \dot{Omega} = Omega^2 - a(t), backward-integrated from the tail
+  std::vector<double> m_beta; // beta(t) = a(t) / Omega(t)
+  std::vector<double> m_B_cum; // B(t0,t) = integral_{t0}^{t} beta, cumulative from index 0
+  std::vector<double> m_K_kernel; // K(t0,t) = beta(t) * exp(-B(t0,t))
+  std::vector<double> m_G_kernel; // Closed-loop kernel G(t0,s), backward recursion, tail-seeded
+  std::vector<double> m_S_cum; // S(t0,s) = integral_s^inf G(t0,tau) dtau, backward cumulative, tail-seeded
+  double m_com_z_amplitude = 0.1; // Amplitude of the CoM height oscillation (metres)
   // Elapsed time since the start of the current step cycle, used to compute
   // the phase-based CoM height profile. Reset to 0 at each step switch.
   double m_tk_within_step = 0.0;
