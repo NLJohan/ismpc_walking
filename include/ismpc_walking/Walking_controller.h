@@ -513,6 +513,11 @@ private:
   double z = 30; // Coordinate for a specified footstep position
 
   Eigen::Vector3d p_com_logged_ = Eigen::Vector3d::Zero();
+  double m_com_height_raw_h0_logged_ = 0.0;
+  double m_com_height_raw_hidx_logged_ = 0.0;
+  int m_mpc_index_logged_ = 0;
+  double m_mpc_thread_process_time_logged_ = 0.0;
+  double m_x0_support_z_logged_ = 0.0;
   bool active = true; // MPC stabilization on or not
   bool UseRealRobot = true; // To use the real robots data
   bool UseMPCState = false;

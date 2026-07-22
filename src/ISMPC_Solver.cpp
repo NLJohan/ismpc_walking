@@ -190,47 +190,117 @@ void ISMPC_Solver::init_MPC(const MPC_state & mpc_state, std::string Tail, int S
   // The duration of step j is T_j = t_end_j - t_start_j.
   // The phase of sample i within step j is phi = (t_i - t_start_j + m_tk_within_step) / T_j
   // (the m_tk_within_step term accounts for the fact that step 0 already started earlier).
+  //
+  // NOTE: the above per-step-phase-locked cosine profile (crouch/extend timed to footstep
+  // phase) is a real, physically-motivated FEATURE, kept available below behind
+  // CoMHeightTestSignal::PerStepCosine, but is NOT what should be used for CoM-z tracking
+  // identification tests: it couples the height profile to footstep timing (variable T_j,
+  // fragile phase bookkeeping across step transitions -- this is what produced the spike
+  // artifacts seen in earlier logged sine-response data), which is exactly the confound we
+  // want to AVOID when trying to isolate the whole-body-controller's own height-tracking
+  // dynamics. For identification, use a wall-clock-based step or sine (below), decoupled
+  // entirely from footstep phase.
 
-  const double four_pi_sq = 4.0 * M_PI * M_PI; // precomputed constant
-
-  // t_start_j relative to now for step j=0: the current step started m_tk_within_step ago
-  double t_start_j = -m_tk_within_step;
-  size_t j = 0; // index into m_timestamp
-
-  for(int i = 0; i < m_C; ++i)
+  // --- CoM-height reference profile selector (for CoM-z tracking identification tests) ---
+  // Only one of these should be active at a time; PerStepCosine is the physically-motivated
+  // production profile, Step and Sine are wall-clock test signals for system identification
+  // (clean impulse/step response fitting, or frequency-domain / least-squares sine fitting).
+  enum class CoMHeightTestSignal
   {
-    const double t_i = static_cast<double>(i) * m_delta; // time of sample i relative to now
+    PerStepCosine, // footstep-phase-locked crouch/extend (production profile, not for identification)
+    Step, // single wall-clock step at m_com_z_test_t0, amplitude m_com_z_amplitude
+    Sine // wall-clock sinusoid, amplitude m_com_z_amplitude, period m_com_z_test_period
+  };
+  constexpr CoMHeightTestSignal test_signal = CoMHeightTestSignal::Step;
 
-    // Advance step index if sample i has crossed into the next step
-    while(j + 1 < m_timestamp.size() && t_i >= m_timestamp[j] - m_tk)
+  switch(test_signal)
+  {
+    case CoMHeightTestSignal::PerStepCosine:
     {
-      t_start_j = m_timestamp[j] - m_tk; // new step starts here relative to now
-      ++j;
+      const double four_pi_sq = 4.0 * M_PI * M_PI; // precomputed constant
+      double t_start_j = -m_tk_within_step; // t_start_j relative to now for step j=0
+      size_t j = 0; // index into m_timestamp
+
+      for(int i = 0; i < m_C; ++i)
+      {
+        const double t_i = static_cast<double>(i) * m_delta; // time of sample i relative to now
+
+        // Advance step index if sample i has crossed into the next step
+        while(j + 1 < m_timestamp.size() && t_i >= m_timestamp[j] - m_tk)
+        {
+          t_start_j = m_timestamp[j] - m_tk; // new step starts here relative to now
+          ++j;
+        }
+
+        // Duration of the step that contains sample i
+        const double t_end_j = (j < m_timestamp.size()) ? (m_timestamp[j] - m_tk) : (m_timestamp.back() - m_tk + m_Tds);
+        const double T_j = t_end_j - t_start_j;
+        const double T_j_safe = (T_j > 1e-6) ? T_j : 1e-6; // guard against zero-duration edge case
+
+        // Phase in [0, 1] within step j
+        const double phi = std::clamp((t_i - t_start_j) / T_j_safe, 0.0, 1.0);
+
+        // Cosine profile: minimum height (crouch) at phi=0 (step start / double support),
+        // maximum height at phi=0.5 (mid single support). Same cosine evaluation gives both
+        // z_c and z_ddot analytically -- no extra trig call.
+        const double cos_phi = std::cos(2.0 * M_PI * phi);
+
+        CoM_height[i] = CoM_height_avg - m_com_z_amplitude * cos_phi;
+
+        // z_ddot = A * (4*pi^2 / T^2) * cos(2*pi*phi)
+        // Derivation: z(phi) = z_nom - A*cos(2*pi*phi), phi = t/T (constant within step)
+        // dz/dt = A * 2*pi/T * sin(2*pi*phi)
+        // d2z/dt2 = A * (2*pi/T)^2 * cos(2*pi*phi)
+        const double zc_ddot = m_com_z_amplitude * (four_pi_sq / (T_j_safe * T_j_safe)) * cos_phi;
+
+        m_eta[i] = std::sqrt((zc_ddot + g) / CoM_height[i]);
+        m_eta_free[i] = m_eta[i];
+      }
+      break;
     }
 
-    // Duration of the step that contains sample i
-    const double t_end_j = (j < m_timestamp.size()) ? (m_timestamp[j] - m_tk) : (m_timestamp.back() - m_tk + m_Tds);
-    const double T_j = t_end_j - t_start_j;
-    const double T_j_safe = (T_j > 1e-6) ? T_j : 1e-6; // guard against zero-duration edge case
+    case CoMHeightTestSignal::Step:
+    {
+      // Single wall-clock step, decoupled from footstep phase, for clean step-response
+      // identification (fit a 1st/2nd-order model to CoM_height_actual(t) vs this reference).
+      // Zero feedforward acceleration: the reference is a true mathematical step (infinite
+      // acceleration at the edge, not representable/meaningful as a feedforward term here);
+      // this is intentional and matches what a step-response identification test wants to see
+      // (an INPUT step, with all resulting z_ddot behavior coming from the plant/tracking
+      // dynamics being identified, not fed forward from the reference itself).
+      for(int i = 0; i < m_C; ++i)
+      {
+        const double t_i = m_t_global + static_cast<double>(i) * m_delta; // absolute time of sample i
+        CoM_height[i] = (t_i < m_com_z_test_t0) ? CoM_height_avg : (CoM_height_avg + m_com_z_amplitude);
 
-    // Phase in [0, 1] within step j
-    const double phi = std::clamp((t_i - t_start_j) / T_j_safe, 0.0, 1.0);
+        const double zc_ddot = 0.0;
+        m_eta[i] = std::sqrt((zc_ddot + g) / CoM_height[i]);
+        m_eta_free[i] = m_eta[i];
+      }
+      break;
+    }
 
-    // Cosine profile: minimum height (crouch) at phi=0 (step start / double support),
-    // maximum height at phi=0.5 (mid single support). Same cosine evaluation gives both
-    // z_c and z_ddot analytically — no extra trig call.
-    const double cos_phi = std::cos(2.0 * M_PI * phi);
+    case CoMHeightTestSignal::Sine:
+    {
+      // Wall-clock sinusoid, decoupled from footstep phase (unlike PerStepCosine above), so the
+      // reference is a clean, uninterrupted sine usable for identification regardless of step
+      // timing/duration. z_c(t) = CoM_height_avg + A*sin(omega_test*t), with the analytically
+      // exact z_ddot fed forward (unlike the Step case above, here a smooth feedforward IS
+      // physically meaningful and should be supplied, since the reference itself is smooth).
+      const double omega_test = 2.0 * M_PI / std::max(m_com_z_test_period, 1e-6);
+      for(int i = 0; i < m_C; ++i)
+      {
+        const double t_i = m_t_global + static_cast<double>(i) * m_delta; // absolute time of sample i
+        const double phase = omega_test * t_i;
 
-    CoM_height[i] = CoM_height_avg - m_com_z_amplitude * cos_phi;
+        CoM_height[i] = CoM_height_avg + m_com_z_amplitude * std::sin(phase);
+        const double zc_ddot = -m_com_z_amplitude * omega_test * omega_test * std::sin(phase);
 
-    // z_ddot = A * (4*pi^2 / T^2) * cos(2*pi*phi)
-    // Derivation: z(phi) = z_nom - A*cos(2*pi*phi), phi = t/T (constant within step)
-    // dz/dt = A * 2*pi/T * sin(2*pi*phi)
-    // d2z/dt2 = A * (2*pi/T)^2 * cos(2*pi*phi)
-    const double zc_ddot = m_com_z_amplitude * (four_pi_sq / (T_j_safe * T_j_safe)) * cos_phi;
-
-    m_eta[i] = std::sqrt((zc_ddot + g) / CoM_height[i]);
-    m_eta_free[i] = m_eta[i];
+        m_eta[i] = std::sqrt((zc_ddot + g) / CoM_height[i]);
+        m_eta_free[i] = m_eta[i];
+      }
+      break;
+    }
   }
 
   Compute_Integration_Matrix(m_eta);

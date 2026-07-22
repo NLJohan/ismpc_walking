@@ -688,7 +688,7 @@ private:
   std::vector<double> m_eta; // Prendulum frequency
   std::vector<double> m_eta_free; // Prendulum frequency disturbance free
   std::vector<double> CoM_height;
-  double CoM_height_avg = 0.75;
+  double CoM_height_avg = 0.70;
 
   // --- Variable-height Riccati stability kernel (Compute_Riccati_Kernel / Compute_Hk_And_bfree) ---
   // All sized N_fine+1 with N_fine = m_C * m_riccati_substeps; index N_fine is the tail node at t0+Tc.
@@ -701,6 +701,8 @@ private:
   std::vector<double> m_G_kernel; // Closed-loop kernel G(t0,s), backward recursion, tail-seeded
   std::vector<double> m_S_cum; // S(t0,s) = integral_s^inf G(t0,tau) dtau, backward cumulative, tail-seeded
   double m_com_z_amplitude = 0.1; // Amplitude of the CoM height oscillation (metres)
+  double m_com_z_test_t0 = 15.0;      // Step-test trigger time (s), wall-clock, replaces old hardcoded 15.0
+  double m_com_z_test_period = 2.0;   // Sine-test period (s), wall-clock
   // Elapsed time since the start of the current step cycle, used to compute
   // the phase-based CoM height profile. Reset to 0 at each step switch.
   double m_tk_within_step = 0.0;

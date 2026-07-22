@@ -210,6 +210,31 @@ Walking_controller::Walking_controller(mc_rbdyn::RobotModulePtr rm,
   // --- CoM target logging for mc_log_ui comparison with com_jvrc1_pos_z ---
   logger().addLogEntry("com_target_pos", this,
     [this]() -> const Eigen::Vector3d & { return p_com_logged_; });
+  // --- CoM-z tracking diagnostics: compare against com_jvrc1_pos_z (or equivalent robot-state
+  // CoM-z log entry, already provided by mc_rtc) to assess (a) MPC-thread pipeline delay
+  // (com_height_ref_h0 vs com_height_ref_hidx) and (b) whole-body-tracking lag/filtering
+  // (com_height_ref_hidx, i.e. what was actually commanded to comTask, vs the true measured
+  // CoM-z). See MoveCoM() for where these are captured.
+  logger().addLogEntry("com_height_ref_h0", this,
+    [this]() -> const double & { return m_com_height_raw_h0_logged_; });
+  logger().addLogEntry("com_height_ref_hidx", this,
+    [this]() -> const double & { return m_com_height_raw_hidx_logged_; });
+  // --- Pipeline-jitter diagnostics: see the detailed comment at the capture site in MoveCoM().
+  // mpc_index: mpc_state_.Index (samples ahead of CoM_height[0] actually read out this cycle).
+  // mpc_process_time_ms: raw solve-time measurement driving Index's computation.
+  // x0_support_z: support-foot height offset added on top of CoM_height[Index] to form
+  //   com_target_pos_z -- logged separately to isolate it from the raw height reference.
+  // controller_timestep / mpc_delta: the two periods Index mixes units between (see comment in
+  //   MoveCoM()); logged every cycle (not just once) in case either is ever reconfigured live.
+  logger().addLogEntry("mpc_index", this, [this]() -> const int & { return m_mpc_index_logged_; });
+  logger().addLogEntry("mpc_process_time_ms", this,
+    [this]() -> const double & { return m_mpc_thread_process_time_logged_; });
+  logger().addLogEntry("x0_support_z", this,
+    [this]() -> const double & { return m_x0_support_z_logged_; });
+  logger().addLogEntry("controller_timestep_diag", this,
+    [this]() -> const double & { return controller_timestep; });
+  logger().addLogEntry("mpc_delta_diag", this,
+    [this]() -> const double & { return controller_config_.delta; });
   deactivate();
   mc_rtc::log::success("ismpc_walking controller init done ");
   if(autoStart)
@@ -732,6 +757,7 @@ void Walking_controller::MoveCoM()
   // (which reads mpc_state_.CoM_height[Index], populated from the solver's time-varying
   // CoM_height vector) instead of being hardcoded to the constant comHeight. The support-foot
   // and swing-foot z offsets are preserved, now added on top of the time-varying value.
+
   p_com.z() += X_0_support.translation().z();
   if(!doubleSupport_state && swing_foot_contact)
   {
@@ -829,6 +855,45 @@ void Walking_controller::MoveCoM()
     }
   }
   p_com_logged_ = p_com;
+
+  // --- CoM-z tracking diagnostics (see logger().addLogEntry calls in the constructor) ---
+  // Gated by the SAME (active && !debugMode) condition as p_com_logged_/comTask->com() just
+  // above -- these must never be read/logged from a stale or not-yet-populated mpc_state_
+  // (e.g. before the first real MPC solve, or while debugMode/!active is holding p_com at the
+  // fixed-stance fallback value). An earlier version of this instrumentation captured these
+  // BEFORE this guard, unconditionally every tick, which produced large spurious pre-activation
+  // oscillations with no physical meaning (an artifact of reading mpc_state_.Index/CoM_height
+  // before they had a legitimate solve to draw from) -- fixed here by moving capture to this
+  // gated location and simply holding the last value while inactive, rather than freeze at a
+  // stale/garbage value.
+  //
+  // m_com_height_raw_h0_logged_: CoM_height[0], the raw value the solver computed for "now" at
+  //   the START of the CURRENT MPC horizon (init_MPC's t_i = m_t_global sample), i.e. what was
+  //   fed into the Riccati/eta computation for the present control cycle. This is the cleanest
+  //   "ground truth reference" signal, free of the Index pipeline offset below.
+  // m_com_height_raw_hidx_logged_: CoM_height[Index], the value actually READ OUT and applied to
+  //   p_com.z() this control cycle (mpc_state_.Index accounts for the MPC-thread processing-time
+  //   pipeline delay, see mpc_thread_state.Index in the MPC thread). Comparing this against
+  //   CoM_height[0] isolates the pipeline-delay contribution from any later whole-body-tracking
+  //   lag; comparing it against the true measured CoM-z (already logged by mc_rtc's own robot
+  //   state, e.g. com_<robotName>_pos_z) isolates the whole-body-tracking contribution.
+  // m_mpc_index_logged_ / m_mpc_thread_process_time_logged_: see the units-mismatch note in the
+  //   constructor's addLogEntry block for mpc_index/mpc_process_time_ms.
+  // m_x0_support_z_logged_: support-foot height offset added on top of CoM_height[Index] to form
+  //   com_target_pos_z's z-component -- logged separately to confirm/refute that this offset
+  //   (not a bug) explains why com_target_pos_z can sit above com_height_ref_hidx.
+  if(active && !debugMode && !mpc_state_.CoM_height.empty())
+  {
+    m_com_height_raw_h0_logged_ = mpc_state_.CoM_height.front();
+    const size_t idx_clamped =
+        std::min(static_cast<size_t>(std::max(mpc_state_.Index, 0)), mpc_state_.CoM_height.size() - 1);
+    m_com_height_raw_hidx_logged_ = mpc_state_.CoM_height[idx_clamped];
+
+    m_mpc_index_logged_ = mpc_state_.Index;
+    m_mpc_thread_process_time_logged_ = mpc_thread_process_time;
+    m_x0_support_z_logged_ = X_0_support.translation().z();
+  }
+
   comTask->com(p_com);
   comTask->refVel(Vc);
   comTask->refAccel(acc_com);
