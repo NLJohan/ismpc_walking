@@ -207,11 +207,13 @@ void ISMPC_Solver::init_MPC(const MPC_state & mpc_state, std::string Tail, int S
   // (clean impulse/step response fitting, or frequency-domain / least-squares sine fitting).
   enum class CoMHeightTestSignal
   {
-    PerStepCosine, // footstep-phase-locked crouch/extend (production profile, not for identification)
-    Step, // single wall-clock step at m_com_z_test_t0, amplitude m_com_z_amplitude
-    Sine // wall-clock sinusoid, amplitude m_com_z_amplitude, period m_com_z_test_period
+    PerStepCosine,
+    Step,
+    Sine,
+    RlSine // RL-driven sine: offset/amplitude/frequency/phase from
+           // SetCoMHeightSineParams(), set externally each control period.
   };
-  constexpr CoMHeightTestSignal test_signal = CoMHeightTestSignal::Step;
+  constexpr CoMHeightTestSignal test_signal = CoMHeightTestSignal::RlSine;
 
   switch(test_signal)
   {
@@ -295,6 +297,26 @@ void ISMPC_Solver::init_MPC(const MPC_state & mpc_state, std::string Tail, int S
 
         CoM_height[i] = CoM_height_avg + m_com_z_amplitude * std::sin(phase);
         const double zc_ddot = -m_com_z_amplitude * omega_test * omega_test * std::sin(phase);
+
+        m_eta[i] = std::sqrt((zc_ddot + g) / CoM_height[i]);
+        m_eta_free[i] = m_eta[i];
+      }
+      break;
+    }
+
+    case CoMHeightTestSignal::RlSine:
+    {
+      // RL-driven sine, mirrors the Sine case above but reads the reference
+      // from SetCoMHeightSineParams() instead of the fixed test constants.
+      // The caller (mc_mjlab) is responsible for offset - amplitude >= 0.
+      const double omega = 2.0 * M_PI * m_rl_com_z_frequency;
+      for(int i = 0; i < m_C; ++i)
+      {
+        const double t_i = m_t_global + static_cast<double>(i) * m_delta;
+        const double phase = omega * t_i + m_rl_com_z_phase;
+
+        CoM_height[i] = m_rl_com_z_offset + m_rl_com_z_amplitude * std::sin(phase);
+        const double zc_ddot = -m_rl_com_z_amplitude * omega * omega * std::sin(phase);
 
         m_eta[i] = std::sqrt((zc_ddot + g) / CoM_height[i]);
         m_eta_free[i] = m_eta[i];

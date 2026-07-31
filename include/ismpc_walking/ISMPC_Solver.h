@@ -201,6 +201,26 @@ public:
     m_kappa_inf = kappa;
   }
 
+  /**
+   * @brief Set the amplitude/frequency/phase/offset of an RL-driven CoM
+   * height sine reference, consumed by init_MPC() (CoMHeightTestSignal::RlSine)
+   * to build CoM_height[] and the analytic zc_ddot feedforward over the
+   * control horizon.
+   *
+   * Caller (mc_mjlab, via the ismpc_walking_python bridge) is responsible for
+   * ensuring amplitude <= offset, so the resulting height trajectory
+   * (offset + amplitude*sin(...)) never goes negative; this setter does not
+   * clamp or validate the values it is given.
+   */
+  void SetCoMHeightSineParams(double offset, double amplitude, double frequency, double phase) noexcept
+  {
+    m_rl_com_z_offset = offset;
+    m_rl_com_z_amplitude = amplitude;
+    m_rl_com_z_frequency = frequency;
+    m_rl_com_z_phase = phase;
+  }
+
+
   double eta()
   {
     return m_eta[0];
@@ -684,6 +704,11 @@ private:
    *otherwise it is a polygone defined by two  rectangle on both feets.
    */
   bool Slide_ZMP_region = false;
+
+  double m_rl_com_z_offset = 0.7;      // RL-set CoM height offset (m)
+  double m_rl_com_z_amplitude = 0.0;   // RL-set sine amplitude (m)
+  double m_rl_com_z_frequency = 0.0;   // RL-set sine frequency (Hz)
+  double m_rl_com_z_phase = 0.0;       // RL-set sine phase offset (rad)
 
   std::vector<double> m_eta; // Prendulum frequency
   std::vector<double> m_eta_free; // Prendulum frequency disturbance free
