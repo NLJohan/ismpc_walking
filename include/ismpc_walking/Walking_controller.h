@@ -50,6 +50,7 @@ public:
 
   ControllerConfiguration controller_config_;
   mc_rtc::Configuration planner_config_;
+  ISMPC_Solver & ismpc_solver() noexcept { return MPCSolver; }
 
   void Configure(const mc_rtc::Configuration & config)
   {
@@ -463,6 +464,7 @@ protected:
   std::shared_ptr<mc_tasks::PostureTask> armTask;
   std::shared_ptr<mc_tasks::MomentumTask> momentumTask;
   std::shared_ptr<mc_tasks::CoMTask> comTask;
+  
 
 private:
   std::mutex mutex_mpc_;
