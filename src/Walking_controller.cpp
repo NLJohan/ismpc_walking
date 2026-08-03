@@ -1057,20 +1057,19 @@ void Walking_controller::reset(const mc_control::ControllerResetData & reset_dat
   mpc_state_.v_c_k = robot().comVelocity();
 
   filter_left_hand_wrench_ = mc_filter::LowPass<sva::ForceVecd>(solver().dt(), controller_config_.wrench_filter_cutoff);
-  filter_right_hand_wrench_ = /* ...unchanged... */;
+  filter_right_hand_wrench_ = mc_filter::LowPass<sva::ForceVecd>(solver().dt(), controller_config_.wrench_filter_cutoff);
 
-  // Re-arm auto_start's walking behavior. autoStart, N_Steps_Desired_std,
-  // reference_velocity, and controller_config_.Double_Step_Ratio are
-  // already correctly populated from `config` at construction time (they
-  // are member variables, not locals) and are never reset elsewhere in
-  // this function, so re-reading `config` here is unnecessary -- we just
-  // need to re-invoke the same effect the constructor's one-time
-  // `if(autoStart) { activate(); ... }` block (around line 240) had.
-  // Without this, reset() leaves the controller in whatever state
-  // deactivate() left it in at construction (see line 238), and it never
-  // walks again after any reset -- an RL episode reset or a
-  // fall-triggered mc_mjlab reset -- even though every other piece of
-  // state above (tasks, MPC, contacts) comes back correctly.
+  // --- ADDED: re-arm auto_start's walking behavior ---
+  // autoStart, N_Steps_Desired_std, reference_velocity, and
+  // controller_config_.Double_Step_Ratio are already populated from
+  // `config` at construction time (member variables, not locals) and are
+  // untouched by anything above in this function, so no re-parsing is
+  // needed here -- we just need to redo the same effect the constructor's
+  // one-time `if(autoStart) { activate(); ... }` block had. Without this,
+  // reset() leaves the controller in whatever state deactivate() left it
+  // in at construction, and it never walks again after any reset -- an RL
+  // episode reset or a fall-triggered mc_mjlab reset -- even though every
+  // other piece of state above (tasks, MPC, contacts) comes back correctly.
   if(autoStart)
   {
     activate();
