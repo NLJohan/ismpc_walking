@@ -1057,23 +1057,39 @@ void Walking_controller::reset(const mc_control::ControllerResetData & reset_dat
   mpc_state_.v_c_k = robot().comVelocity();
 
   filter_left_hand_wrench_ = mc_filter::LowPass<sva::ForceVecd>(solver().dt(), controller_config_.wrench_filter_cutoff);
-  filter_right_hand_wrench_ = mc_filter::LowPass<sva::ForceVecd>(solver().dt(), controller_config_.wrench_filter_cutoff);
+  filter_right_hand_wrench_ =
+      mc_filter::LowPass<sva::ForceVecd>(solver().dt(), controller_config_.wrench_filter_cutoff);
+  filter_gamma_ = mc_filter::LowPass<Eigen::Vector3d>(solver().dt(), controller_config_.gamma_filter_cutoff);
 
-  // --- ADDED: re-arm auto_start's walking behavior ---
-  // autoStart, N_Steps_Desired_std, reference_velocity, and
-  // controller_config_.Double_Step_Ratio are already populated from
-  // `config` at construction time (member variables, not locals) and are
-  // untouched by anything above in this function, so no re-parsing is
-  // needed here -- we just need to redo the same effect the constructor's
-  // one-time `if(autoStart) { activate(); ... }` block had. Without this,
-  // reset() leaves the controller in whatever state deactivate() left it
-  // in at construction, and it never walks again after any reset -- an RL
-  // episode reset or a fall-triggered mc_mjlab reset -- even though every
-  // other piece of state above (tasks, MPC, contacts) comes back correctly.
+  swing_foot_initial_pose = robot().surfacePose(swingFootName).translation();
+  X_0_SwingFootInitial = swing_foot_initial_pose;
+  updateTasks();
+
+  addContact({robot().name(), "ground", rightFootName_, "AllGround", 0.7, footcontact_dof});
+  addContact({robot().name(), "ground", leftFootName_, "AllGround", 0.7, footcontact_dof});
+
+  MPC_thread_on = false;
+  MPC_thread_ready = false;
+  if(walkingTrajectoryThread.joinable())
+  {
+    compute_trajectory_once.notify_all();
+    walkingTrajectoryThread.join();
+  }
+
+  // --- ADDED: re-arm auto_start's walking behavior before the original
+  // code neutralizes autoStart below. Without this, autoStart's one-time
+  // effect from the constructor is silently discarded by every reset()
+  // (see `autoStart = false;` at the end, unchanged from the original),
+  // and the controller never walks again after any reset.
   if(autoStart)
   {
     activate();
     Stop = false;
     N_Steps_Desired = N_Steps_Desired_std;
   }
+  else
+  {
+    deactivate();
+  }
+  autoStart = false;
 }
