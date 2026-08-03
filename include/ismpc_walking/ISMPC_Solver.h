@@ -713,7 +713,7 @@ private:
   std::vector<double> m_eta; // Prendulum frequency
   std::vector<double> m_eta_free; // Prendulum frequency disturbance free
   std::vector<double> CoM_height;
-  double CoM_height_avg = 0.70;
+  double CoM_height_avg = 0.78;
 
   // --- Variable-height Riccati stability kernel (Compute_Riccati_Kernel / Compute_Hk_And_bfree) ---
   // All sized N_fine+1 with N_fine = m_C * m_riccati_substeps; index N_fine is the tail node at t0+Tc.

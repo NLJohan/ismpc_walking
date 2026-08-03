@@ -88,9 +88,9 @@ tasks:
 
 walking_controller:
   auto_start:
-    activate: false
+    activate: true
     steps: 100
-    speed: [0.25,0.0,0.1]
+    speed: [0.0,0.0,0.0]
     ts: 1.1
     double_support_ratio: 0.25
 
