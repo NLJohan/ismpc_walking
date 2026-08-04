@@ -19,3 +19,8 @@ cdef extern from "ismpc_walking_bridge.h":
 
   cppbool ismpc_walking_qp_succeeded(object py_ctl,
                                       cppbool & value) except+
+
+  cppbool ismpc_walking_set_reference_velocity(object py_ctl,
+                                                double vx,
+                                                double vy,
+                                                double wz) except+

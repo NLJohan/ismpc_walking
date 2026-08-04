@@ -258,6 +258,12 @@ public:
   {
     N_Steps_Desired_std = steps;
   }
+  void SetReferenceVelocity(const Eigen::Vector3d & vel) noexcept
+  {
+    reference_velocity = vel;
+    velocityControl = true;
+  }
+
   void SwitchFootSupport_manual()
   {
     if(!Robot_Walking)
@@ -599,7 +605,18 @@ private:
   bool swing_foot_contact = true;
   bool doubleSupport_state = true;
   bool StepRecoveryState = false;
+  // Change to:
   bool autoStart = false;
+  // Set once at construction from autoStart's initial value and never
+  // modified again -- unlike autoStart itself, which reset() unconditionally
+  // zeroes at the end of every call (see reset()'s tail) so that auto_start's
+  // effect only ever fires on the controller's first construction. This
+  // second flag exists so reset() can still re-arm walking on every
+  // subsequent episode reset (needed for mc_mjlab's RL use case, where every
+  // episode boundary needs the same "start walking" behavior to fire) without
+  // changing autoStart's own established meaning/lifecycle, which nothing
+  // else in this file depends on but which we have no reason to disturb.
+  bool autoStartConfigured = false;
 
   bool Use_w = true;
   Eigen::Vector3d w_ = Eigen::Vector3d::Zero();

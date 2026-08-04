@@ -196,7 +196,9 @@ Walking_controller::Walking_controller(mc_rbdyn::RobotModulePtr rm,
   create_datastore();
   getTransformations();
 
+  // Change to:
   autoStart = config("walking_controller")("auto_start")("activate");
+  autoStartConfigured = autoStart;
   reference_velocity.setZero();
 
   MPCSolver.Allow_none(controller_config_.MPC_allow_None);
@@ -1076,12 +1078,7 @@ void Walking_controller::reset(const mc_control::ControllerResetData & reset_dat
     walkingTrajectoryThread.join();
   }
 
-  // --- ADDED: re-arm auto_start's walking behavior before the original
-  // code neutralizes autoStart below. Without this, autoStart's one-time
-  // effect from the constructor is silently discarded by every reset()
-  // (see `autoStart = false;` at the end, unchanged from the original),
-  // and the controller never walks again after any reset.
-  if(autoStart)
+  if(autoStartConfigured)
   {
     activate();
     Stop = false;

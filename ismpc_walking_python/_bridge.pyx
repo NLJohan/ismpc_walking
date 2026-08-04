@@ -44,3 +44,22 @@ def qp_succeeded(ctl):
   if not ok:
     return None
   return bool(value)
+
+
+def set_reference_velocity(ctl, double vx, double vy, double wz):
+  """Push the RL-commanded reference velocity (vx, vy, wz; body-frame
+  linear x/y, angular z) into the running ISMPC walking controller.
+
+  `ctl` should be an mc_control.MCController instance. Returns True if it
+  was actually a Walking_controller and the call landed, False otherwise
+  (e.g. wrong controller loaded -- caller should treat that as "nothing
+  happened", not as an error).
+
+  Safe to call mid-swing: Walking_controller::UpdatePlanner_input() reads
+  reference_velocity fresh every call, there is no caching or sequencing
+  requirement around footstep boundaries.
+  """
+  cdef cppbool ok = c_bridge.ismpc_walking_set_reference_velocity(
+    ctl, vx, vy, wz
+  )
+  return ok

@@ -127,3 +127,35 @@ inline bool ismpc_walking_qp_succeeded(PyObject * py_ctl, bool & value)
   value = walking->ismpc_solver().QPsucceeded();
   return true;
 }
+
+/**
+ * @brief Push the RL-commanded reference velocity into the running ISMPC
+ * walking controller. Read fresh every UpdatePlanner_input() call (no
+ * caching), so this can be set at any point mid-swing without needing to
+ * be sequenced around footstep boundaries.
+ *
+ * @param py_ctl A Python mc_control.MCController object.
+ * @param vx     Reference linear velocity, x (m/s, body frame).
+ * @param vy     Reference linear velocity, y (m/s, body frame).
+ * @param wz     Reference angular velocity, z (rad/s).
+ * @return true if py_ctl was actually a Walking_controller and the call
+ *         landed, false otherwise.
+ */
+inline bool ismpc_walking_set_reference_velocity(PyObject * py_ctl,
+                                                   double vx,
+                                                   double vy,
+                                                   double wz)
+{
+  auto * ctl = ismpc_walking_unwrap_mc_controller(py_ctl);
+  if(ctl == nullptr)
+  {
+    return false;
+  }
+  auto * walking = dynamic_cast<Walking_controller *>(ctl);
+  if(walking == nullptr)
+  {
+    return false;
+  }
+  walking->SetReferenceVelocity(Eigen::Vector3d{vx, vy, wz});
+  return true;
+}
