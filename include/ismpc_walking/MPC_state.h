@@ -243,4 +243,73 @@ struct MPC_state
   bool stop = true;
   bool standing_mode = true;
   bool doubleSupport = true;
+
+  /**
+ * @brief Reset all solve-derived/horizon state to its "no MPC solve has
+ * happened yet" values, without touching persistent-but-not-solve-derived
+ * fields (default_CoM_height, input_eta, input_mass, eta, kappa, tds,
+ * input_tds, optimal_tds -- these are configuration/tuning values, not
+ * outputs of a previous solve, and keeping them is correct/intended).
+ *
+ * Call this on BOTH mpc_state_ and mpc_thread_state at the start of a fresh
+ * episode (see Walking_controller::reset()) -- leaving either one stale
+ * lets UpdateInitialVectors()'s `X_MPC.size() != 0` branch read leftover
+ * horizon data from the previous episode's last solve, which is exactly
+ * the mechanism traced down in this project's reset-state investigation
+ * (a stale, non-empty X_MPC/Index right after reset silently overwrites
+ * the freshly-reset p_c_k with a stale trajectory sample).
+ */
+void ClearSolveState()
+{
+  X_MPC.clear();
+  Y_MPC.clear();
+  CoM_height.clear();
+  eta_vec.clear();
+  SupPolygon.clear();
+  FeasibilityPolygon.clear();
+  FeasibilityPolygonStandingSwitch = SupportPolygon();
+  Traj_ant = Eigen::VectorXd();
+  P_traj.clear();
+  Tail = true;
+  kfoot = 0;
+  stab_error.setZero();
+  QPSuccess = false;
+  Pu_min.setZero();
+  Pu_max.setZero();
+  alpha = 0;
+  ref_zmp_.setZero();
+  Index = 0;
+  initial_zmp_.setZero();
+  delayed_zmp_.setZero();
+  t_k = 0;
+  t_lift = 0;
+  p_c_k.setZero();
+  v_c_k.setZero();
+  p_z_k.setZero();
+  Uk.setZero();
+  Lck.setZero();
+  ComBias.setZero();
+  admittance_ref_.clear();
+  p_u.setZero();
+  w.setZero();
+  mpc_u_.resize(0);
+  mpc_Lc_dot_.resize(0);
+  QP_zmp.clear();
+  QP_dcm.clear();
+  input_v_.clear();
+  input_ref_pose_.clear();
+  planned_steps_.clear();
+  input_timesteps_.clear();
+  planned_timesteps_.clear();
+  optimal_steps_.clear();
+  optimal_timesteps_.clear();
+  input_Support_FootName.clear();
+  X_0_SupportFoot = sva::PTransformd::Identity();
+  X_0_Initial_SwingFoot = sva::PTransformd::Identity();
+  X_0_SwingFoot = sva::PTransformd::Identity();
+  X_0_Step_Target = sva::PTransformd::Identity();
+  stop = true;
+  standing_mode = true;
+  doubleSupport = true;
+  }
 };

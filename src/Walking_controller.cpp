@@ -376,7 +376,17 @@ void Walking_controller::ComputeWalkingTrajectory()
   //   tail = "None";
   //   mc_rtc::log::warning("[ISMPC] Approaching Control Horizon, Tail temporary switched to None");
   // }
-
+  // mc_rtc::log::warning(
+  //     "[ComputeWalkingTrajectory] Steps={} Steps_Desired={} Stop={} doubleSupport_state={} ref_vel=({},{},{}) "
+  //     "com_pu=({},{},{}) v_c_k=({},{},{}) t_k={} count={} realRobotCom=({},{},{}) realRobotComVel=({},{},{}) "
+  //     "ComBias=({},{},{}) eta_at_index={} Index={}",
+  //     Steps, Steps_Desired, Stop, doubleSupport_state, reference_velocity.x(), reference_velocity.y(),
+  //     reference_velocity.z(), mpc_thread_state.p_u.x(), mpc_thread_state.p_u.y(), mpc_thread_state.p_u.z(),
+  //     mpc_thread_state.v_c_k.x(), mpc_thread_state.v_c_k.y(), mpc_thread_state.v_c_k.z(), t_k, count,
+  //     realRobot().com().x(), realRobot().com().y(), realRobot().com().z(), realRobot().comVelocity().x(),
+  //     realRobot().comVelocity().y(), realRobot().comVelocity().z(), mpc_thread_state.ComBias.x(),
+  //     mpc_thread_state.ComBias.y(), mpc_thread_state.ComBias.z(),
+  //     mpc_thread_state.getEta(static_cast<size_t>(mpc_thread_state.Index)), mpc_thread_state.Index);
   MPCSolver.init_MPC(mpc_thread_state, Tail, Steps_Desired, Steps);
   // MPCSolver.Puk(mpc_state_.p_u);
 
@@ -909,6 +919,18 @@ void Walking_controller::MoveCoM()
 
 void Walking_controller::UpdateInitialVectors()
 {
+  if(count < 5)
+  {
+    mc_rtc::log::warning(
+        "[UpdateInitialVectors ENTRY] count={} UseRealRobot={} UseMPCState={} debugMode={} "
+        "realRobotCom=({},{},{}) realRobotComVel=({},{},{}) simRobotCom=({},{},{}) simRobotComVel=({},{},{}) "
+        "biasDCM=({},{})",
+        count, UseRealRobot, UseMPCState, debugMode, realRobot().com().x(), realRobot().com().y(),
+        realRobot().com().z(), realRobot().comVelocity().x(), realRobot().comVelocity().y(),
+        realRobot().comVelocity().z(), robot().com().x(), robot().com().y(), robot().com().z(),
+        robot().comVelocity().x(), robot().comVelocity().y(), robot().comVelocity().z(), stabTask->biasDCM().x(),
+        stabTask->biasDCM().y());
+  }
 
   mpc_state_.t_k = t_k;
   mpc_state_.t_lift = t_lift;
@@ -1025,7 +1047,95 @@ void Walking_controller::UpdateInitialVectors()
 
 void Walking_controller::reset(const mc_control::ControllerResetData & reset_data)
 {
+  mc_rtc::log::warning(
+      "[reset] ENTER Robot_Walking={} active={} Stop={} t_k={} count={} ref_vel=({},{},{}) N_Steps={}",
+      Robot_Walking, active, Stop, t_k, count, reference_velocity.x(), reference_velocity.y(),
+      reference_velocity.z(), N_Steps);  
+      mc_rtc::log::warning(
+      "[reset] ENTER linearAccel = {} and angularVel = {}", robot().bodySensor().linearAcceleration(), 
+      robot().bodySensor().angularVelocity());
+
   mc_control::fsm::Controller::reset(reset_data);
+
+  // Zero realRobot()'s velocity BEFORE resetObserverPipelines() runs.
+  // KinematicInertialObserver::reset(ctl) seeds its internal velFilter_ from
+  // ctl.realRobot(robot_).velW() -- i.e. it INHERITS whatever velocity was
+  // already there, it does not zero it. Left untouched, that seed is the
+  // previous episode's last velocity before the fall (tens of m/s in
+  // practice, confirmed via realRobotComVel logging below and in
+  // UpdateInitialVectors()). Zeroing it here means the seed itself is
+  // correct even if the observer's own anchor-jump "skip update" guard
+  // (firstIter_ in KinematicInertialPoseObserver) is a ONE-SHOT grace
+  // period that gets consumed by an extra run()/update() cycle whose exact
+  // timing relative to this function we don't fully control.
+  realRobot().velW(sva::MotionVecd::Zero());
+
+  // NEW: real fix for the post-reset garbage realRobot().comVelocity() issue
+  // (confirmed via debug prints: realRobot().com() is sane immediately after
+  // reset, but realRobot().comVelocity() reads e.g. 26-75 m/s and decays
+  // slowly over many ticks instead of snapping to zero -- the signature of
+  // an observer filter whose internal history spans the reset's
+  // discontinuous anchor-frame jump). mc_control::MCController exposes
+  // resetObserverPipelines() specifically for this: each Observer's own
+  // reset(const MCController&) "should make sure the observer is started in
+  // a state consistent with the current robot state" and is documented to
+  // be called after MCController::reset() -- which Walking_controller::reset()
+  // never did on its own. Calling it here, right after the base FSM reset
+  // and before UpdateInitialVectors() ever reads realRobot(), makes the
+  // KinematicInertial observer re-anchor against the freshly-reset robot
+  // state instead of carrying stale filter history across the episode
+  // boundary. This replaces the earlier "hold v_c_k at sim ground truth for
+  // N ticks" workaround in UpdateInitialVectors(), which only masked the
+  // symptom.
+  mc_rtc::log::warning(
+      "[reset] BEFORE resetObserverPipelines: leftFootPose=({},{},{}) rightFootPose=({},{},{}) robotCom=({},{},{}) "
+      "realRobotCom=({},{},{}) realRobotComVel=({},{},{})",
+      robot().surfacePose(leftFootName_).translation().x(), robot().surfacePose(leftFootName_).translation().y(),
+      robot().surfacePose(leftFootName_).translation().z(), robot().surfacePose(rightFootName_).translation().x(),
+      robot().surfacePose(rightFootName_).translation().y(), robot().surfacePose(rightFootName_).translation().z(),
+      robot().com().x(), robot().com().y(), robot().com().z(), realRobot().com().x(), realRobot().com().y(),
+      realRobot().com().z(), realRobot().comVelocity().x(), realRobot().comVelocity().y(),
+      realRobot().comVelocity().z());
+
+  bool observerResetOk = resetObserverPipelines();
+
+  // DIAGNOSTIC: drive the observer pipeline through several run() cycles
+  // synchronously, logging the anchor frame after each, to see how many
+  // cycles it actually takes to converge to a stable value post-reset --
+  // rather than assume resetObserverPipelines() alone (which only calls
+  // each observer's reset(), not run()) is sufficient.
+  for(int i = 0; i < 5; ++i)
+  {
+    bool runOk = runObserverPipelines();
+    const mc_rbdyn::Robot & realRobotConst = realRobot();
+    auto anchorFrameRealNow =
+        datastore().call<sva::PTransformd>("KinematicAnchorFrame::" + robot().name(), realRobotConst);
+    mc_rtc::log::warning(
+        "[reset] DIAGNOSTIC post-reset runObserverPipelines() iter={} ok={} anchor=({},{},{}) "
+        "realRobotComVel=({},{},{})",
+        i, runOk, anchorFrameRealNow.translation().x(), anchorFrameRealNow.translation().y(),
+        anchorFrameRealNow.translation().z(), realRobot().comVelocity().x(), realRobot().comVelocity().y(),
+        realRobot().comVelocity().z());
+    mc_rtc::log::warning(
+    "[reset] DIAGNOSTIC iter={} realRobot orientation (quat wxyz)=({},{},{},{})",
+    i, Eigen::Quaterniond(realRobot().posW().rotation()).w(),
+    Eigen::Quaterniond(realRobot().posW().rotation()).x(),
+    Eigen::Quaterniond(realRobot().posW().rotation()).y(),
+    Eigen::Quaterniond(realRobot().posW().rotation()).z());
+  }
+  mc_rtc::log::warning(
+        "[reset] realRobot().velW(sva::MotionVecd::Zero()) = {}", realRobot().velW());
+  realRobot().velW(sva::MotionVecd::Zero());
+
+  mc_rtc::log::warning(
+      "[reset] AFTER resetObserverPipelines() returned {}: leftFootPose=({},{},{}) rightFootPose=({},{},{}) "
+      "realRobotCom=({},{},{}) realRobotComVel=({},{},{})",
+      observerResetOk, robot().surfacePose(leftFootName_).translation().x(),
+      robot().surfacePose(leftFootName_).translation().y(), robot().surfacePose(leftFootName_).translation().z(),
+      robot().surfacePose(rightFootName_).translation().x(), robot().surfacePose(rightFootName_).translation().y(),
+      robot().surfacePose(rightFootName_).translation().z(), realRobot().com().x(), realRobot().com().y(),
+      realRobot().com().z(), realRobot().comVelocity().x(), realRobot().comVelocity().y(),
+      realRobot().comVelocity().z());
 
   stabTask->reset();
   mc_rbdyn::lipm_stabilizer::StabilizerConfiguration config_stab = controller_config_.stab_config;
@@ -1048,9 +1158,41 @@ void Walking_controller::reset(const mc_control::ControllerResetData & reset_dat
   mpc_state_.input_timesteps_.clear();
   mpc_state_.input_ref_pose_.clear();
 
+  // NEW: reset walking-phase bookkeeping. These are Walking_controller members
+  // (NOT part of mpc_state_, so ClearSolveState() below does not touch them) and
+  // drive both the local phase clock t = (count - countStart) * controller_timestep
+  // and mpc_state_.t_k, which UpdatePlanner_input() feeds to the pendulum
+  // feasibility/timing solver as a timing horizon. Leaving these stale after a
+  // reset means the freshly-restarted MPC thread solves a timing problem
+  // relative to an old episode's clock, producing exactly the "broken cstr" /
+  // huge offset-delta QP failures seen right after reset.
+  count = 0;
+  countStart = 0;
+  t = 0;
+  t_k = -controller_config_.delta;
+  count_stop = 0;
+  t_stop = 0;
+  kfoot = 0;
+  mpc_state_.Index = 0;
+  mpc_thread_state.Index = 0;
+
   SupportFootPose = robot().surfacePose(supportFootName).translation();
   SupportFootPose.z() = 0;
 
+  mpc_state_.p_c_k = robot().com();
+  mpc_state_.p_c_k.z() = controller_config_.stab_config.comHeight;
+  mpc_state_.p_z_k = robot().surfacePose(swingFootName).translation();
+  mpc_state_.p_z_k.z() = 0;
+  mpc_state_.p_u = mpc_state_.p_c_k;
+  mpc_state_.v_c_k = robot().comVelocity();
+
+  // NEW: clear all solve-derived horizon state on both copies, so
+  // UpdateInitialVectors()/MoveCoM() cannot read a stale trajectory from
+  // the previous episode before the MPC thread produces a fresh one.
+  mpc_state_.ClearSolveState();
+  mpc_thread_state.ClearSolveState();
+  // Re-apply the fresh p_c_k/p_z_k/p_u/v_c_k set just above, since
+  // ClearSolveState() zeroes them along with everything else.
   mpc_state_.p_c_k = robot().com();
   mpc_state_.p_c_k.z() = controller_config_.stab_config.comHeight;
   mpc_state_.p_z_k = robot().surfacePose(swingFootName).translation();
@@ -1078,6 +1220,39 @@ void Walking_controller::reset(const mc_control::ControllerResetData & reset_dat
     walkingTrajectoryThread.join();
   }
 
+  // NEW: activate()/deactivate() are both gated on `if(!Robot_Walking)` (see
+  // their definitions) -- they are no-ops whenever Robot_Walking is true.
+  // Robot_Walking is only ever written inside run() (never reset here), so
+  // if the previous episode terminated mid-stride (the common case: falls
+  // happen while walking, not while standing), it is still true at this
+  // point and the activate()/deactivate() calls below would silently do
+  // nothing, leaving `active` stuck at whatever it was at termination --
+  // e.g. permanently false if MoveCoM()'s "Control Horizon reached" path
+  // had called deactivate() before the episode ended. Explicitly clear it
+  // here so activate()/deactivate() actually take effect on every reset,
+  // matching the intent of the autoStartConfigured re-arm below.
+  Robot_Walking = false;
+
+  // NEW: reference_velocity is a Walking_controller member, set at
+  // construction (setZero(), then possibly overwritten by auto_start.speed)
+  // but never touched by reset() -- so after the first episode it holds
+  // whatever the last set_reference_velocity() bridge call wrote, i.e. the
+  // PREVIOUS episode's last-sampled twist command, not zero and not the new
+  // episode's freshly-resampled one (the Python side only pushes the new
+  // twist from apply_actions(), which runs strictly after this reset() call
+  // returns). UpdatePlanner_input() feeds this straight into step_velocity,
+  // which seeds the footstep-planner/pendulum-solver's velocity horizon on
+  // the very first post-reset solve -- combined with the CoM/support state
+  // that was JUST reset to the fresh nominal pose, a large stale velocity
+  // here is a footstep target wildly inconsistent with the actual reset
+  // state, which is consistent with the large multi-constraint QP breaks
+  // seen immediately after reset. Zero it here, matching the constructor's
+  // own initialization; N_Steps is reset alongside it for the same reason
+  // (see Steps/Steps_Desired in ComputeWalkingTrajectory(), also never
+  // reset elsewhere).
+  reference_velocity.setZero();
+  N_Steps = 0;
+
   if(autoStartConfigured)
   {
     activate();
@@ -1089,4 +1264,14 @@ void Walking_controller::reset(const mc_control::ControllerResetData & reset_dat
     deactivate();
   }
   autoStart = false;
+
+  mc_rtc::log::warning(
+      "[reset] EXIT  Robot_Walking={} active={} Stop={} t_k={} count={} ref_vel=({},{},{}) N_Steps={} "
+      "autoStartConfigured={} realRobotComVel=({},{},{})",
+      Robot_Walking, active, Stop, t_k, count, reference_velocity.x(), reference_velocity.y(),
+      reference_velocity.z(), N_Steps, autoStartConfigured, realRobot().comVelocity().x(),
+      realRobot().comVelocity().y(), realRobot().comVelocity().z());
+  mc_rtc::log::warning(
+      "[reset] EXIT linearAccel = {} and angularVel = {}", robot().bodySensor().linearAcceleration(), 
+      robot().bodySensor().angularVelocity());
 }
