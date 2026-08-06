@@ -471,7 +471,7 @@ void Walking_controller::UpdatePlanner_input()
   Eigen::Vector3d step_velocity = reference_velocity;
   double step_time = T_Steps;
 
-  if(StepRecoveryState)
+  if(StepRecoveryState || postResetSettleTicksRemaining > 0)
   {
     step_velocity.setZero();
   }
@@ -647,6 +647,19 @@ bool Walking_controller::run()
     UpdateInitialVectors();
     UpdatePlanner_input();
     mpc_state_.Index += 1;
+  }
+
+  if(postResetSettleTicksRemaining > 0)
+  {
+    --postResetSettleTicksRemaining;
+    if(postResetSettleTicksRemaining == 0)
+    {
+      // Settle window elapsed: let the walking-gate below start stepping on
+      // the NEXT tick that satisfies it (Stop is only ever a gate, not a
+      // one-shot trigger, so clearing it here just stops holding double
+      // support artificially).
+      Stop = false;
+    }
   }
 
   if(!(Stop && doubleSupport_state))
@@ -1050,25 +1063,9 @@ void Walking_controller::reset(const mc_control::ControllerResetData & reset_dat
   mc_rtc::log::warning(
       "[reset] ENTER Robot_Walking={} active={} Stop={} t_k={} count={} ref_vel=({},{},{}) N_Steps={}",
       Robot_Walking, active, Stop, t_k, count, reference_velocity.x(), reference_velocity.y(),
-      reference_velocity.z(), N_Steps);  
-      mc_rtc::log::warning(
-      "[reset] ENTER linearAccel = {} and angularVel = {}", robot().bodySensor().linearAcceleration(), 
-      robot().bodySensor().angularVelocity());
+      reference_velocity.z(), N_Steps);
 
   mc_control::fsm::Controller::reset(reset_data);
-
-  // Zero realRobot()'s velocity BEFORE resetObserverPipelines() runs.
-  // KinematicInertialObserver::reset(ctl) seeds its internal velFilter_ from
-  // ctl.realRobot(robot_).velW() -- i.e. it INHERITS whatever velocity was
-  // already there, it does not zero it. Left untouched, that seed is the
-  // previous episode's last velocity before the fall (tens of m/s in
-  // practice, confirmed via realRobotComVel logging below and in
-  // UpdateInitialVectors()). Zeroing it here means the seed itself is
-  // correct even if the observer's own anchor-jump "skip update" guard
-  // (firstIter_ in KinematicInertialPoseObserver) is a ONE-SHOT grace
-  // period that gets consumed by an extra run()/update() cycle whose exact
-  // timing relative to this function we don't fully control.
-  realRobot().velW(sva::MotionVecd::Zero());
 
   // NEW: real fix for the post-reset garbage realRobot().comVelocity() issue
   // (confirmed via debug prints: realRobot().com() is sane immediately after
@@ -1089,48 +1086,30 @@ void Walking_controller::reset(const mc_control::ControllerResetData & reset_dat
   // symptom.
   mc_rtc::log::warning(
       "[reset] BEFORE resetObserverPipelines: leftFootPose=({},{},{}) rightFootPose=({},{},{}) robotCom=({},{},{}) "
-      "realRobotCom=({},{},{}) realRobotComVel=({},{},{})",
+      "realRobotCom=({},{},{})",
       robot().surfacePose(leftFootName_).translation().x(), robot().surfacePose(leftFootName_).translation().y(),
       robot().surfacePose(leftFootName_).translation().z(), robot().surfacePose(rightFootName_).translation().x(),
       robot().surfacePose(rightFootName_).translation().y(), robot().surfacePose(rightFootName_).translation().z(),
       robot().com().x(), robot().com().y(), robot().com().z(), realRobot().com().x(), realRobot().com().y(),
-      realRobot().com().z(), realRobot().comVelocity().x(), realRobot().comVelocity().y(),
-      realRobot().comVelocity().z());
-
+      realRobot().com().z());
   bool observerResetOk = resetObserverPipelines();
-
-  // DIAGNOSTIC: drive the observer pipeline through several run() cycles
-  // synchronously, logging the anchor frame after each, to see how many
-  // cycles it actually takes to converge to a stable value post-reset --
-  // rather than assume resetObserverPipelines() alone (which only calls
-  // each observer's reset(), not run()) is sufficient.
-  for(int i = 0; i < 5; ++i)
-  {
-    bool runOk = runObserverPipelines();
-    const mc_rbdyn::Robot & realRobotConst = realRobot();
-    auto anchorFrameRealNow =
-        datastore().call<sva::PTransformd>("KinematicAnchorFrame::" + robot().name(), realRobotConst);
-    mc_rtc::log::warning(
-        "[reset] DIAGNOSTIC post-reset runObserverPipelines() iter={} ok={} anchor=({},{},{}) "
-        "realRobotComVel=({},{},{})",
-        i, runOk, anchorFrameRealNow.translation().x(), anchorFrameRealNow.translation().y(),
-        anchorFrameRealNow.translation().z(), realRobot().comVelocity().x(), realRobot().comVelocity().y(),
-        realRobot().comVelocity().z());
-    mc_rtc::log::warning(
-    "[reset] DIAGNOSTIC iter={} realRobot orientation (quat wxyz)=({},{},{},{})",
-    i, Eigen::Quaterniond(realRobot().posW().rotation()).w(),
-    Eigen::Quaterniond(realRobot().posW().rotation()).x(),
-    Eigen::Quaterniond(realRobot().posW().rotation()).y(),
-    Eigen::Quaterniond(realRobot().posW().rotation()).z());
-  }
+  // NEW: resetObserverPipelines() only re-seeds each Observer's internal
+  // filter/history state -- confirmed via debug print that realRobot()'s
+  // pose/velocity were UNCHANGED immediately after this call, still holding
+  // the previous episode's stale estimate. Per mc_rtc's own Observer API,
+  // the function that actually writes into realRobots() is updateRobots(),
+  // which only runs after Observer::run(), and run() normally only executes
+  // as part of runObserverPipelines() on the controller's own next run()
+  // tick -- too late for UpdateInitialVectors() at count=0, which reads
+  // realRobot() before that tick's pipeline has had a chance to execute
+  // against the freshly-reset internal state. Explicitly run the pipeline
+  // once here, synchronously, so realRobots() is actually refreshed against
+  // the post-teleport sensor readings before anything reads it.
+  bool observerRunOk = runObserverPipelines();
   mc_rtc::log::warning(
-        "[reset] realRobot().velW(sva::MotionVecd::Zero()) = {}", realRobot().velW());
-  realRobot().velW(sva::MotionVecd::Zero());
-
-  mc_rtc::log::warning(
-      "[reset] AFTER resetObserverPipelines() returned {}: leftFootPose=({},{},{}) rightFootPose=({},{},{}) "
-      "realRobotCom=({},{},{}) realRobotComVel=({},{},{})",
-      observerResetOk, robot().surfacePose(leftFootName_).translation().x(),
+      "[reset] AFTER resetObserverPipelines()={} runObserverPipelines()={}: leftFootPose=({},{},{}) "
+      "rightFootPose=({},{},{}) realRobotCom=({},{},{}) realRobotComVel=({},{},{})",
+      observerResetOk, observerRunOk, robot().surfacePose(leftFootName_).translation().x(),
       robot().surfacePose(leftFootName_).translation().y(), robot().surfacePose(leftFootName_).translation().z(),
       robot().surfacePose(rightFootName_).translation().x(), robot().surfacePose(rightFootName_).translation().y(),
       robot().surfacePose(rightFootName_).translation().z(), realRobot().com().x(), realRobot().com().y(),
@@ -1256,22 +1235,29 @@ void Walking_controller::reset(const mc_control::ControllerResetData & reset_dat
   if(autoStartConfigured)
   {
     activate();
-    Stop = false;
+    // NEW: don't clear Stop immediately. Walking_controller stays `active`
+    // (stabilizer/CoM tracking engaged, MoveCoM() still runs every tick) but
+    // MoveFeet()/stepping is gated behind `!(Stop && doubleSupport_state)`
+    // in run() -- holding Stop=true for a short settle window keeps the
+    // robot in double support, controller "still active, just not walking"
+    // (per discussion), rather than letting ISMPC commit to a footstep plan
+    // on frame 0 of the fresh reset pose before the physics/contact state
+    // has had a chance to settle. postResetSettleTicksRemaining counts down
+    // in run(); Stop clears there once it reaches 0.
+    Stop = true;
+    postResetSettleTicksRemaining = kPostResetSettleTicks;
     N_Steps_Desired = N_Steps_Desired_std;
   }
   else
   {
     deactivate();
+    postResetSettleTicksRemaining = 0;
   }
   autoStart = false;
 
   mc_rtc::log::warning(
       "[reset] EXIT  Robot_Walking={} active={} Stop={} t_k={} count={} ref_vel=({},{},{}) N_Steps={} "
-      "autoStartConfigured={} realRobotComVel=({},{},{})",
+      "autoStartConfigured={}",
       Robot_Walking, active, Stop, t_k, count, reference_velocity.x(), reference_velocity.y(),
-      reference_velocity.z(), N_Steps, autoStartConfigured, realRobot().comVelocity().x(),
-      realRobot().comVelocity().y(), realRobot().comVelocity().z());
-  mc_rtc::log::warning(
-      "[reset] EXIT linearAccel = {} and angularVel = {}", robot().bodySensor().linearAcceleration(), 
-      robot().bodySensor().angularVelocity());
+      reference_velocity.z(), N_Steps, autoStartConfigured);
 }

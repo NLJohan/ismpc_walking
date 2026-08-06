@@ -617,6 +617,16 @@ private:
   // changing autoStart's own established meaning/lifecycle, which nothing
   // else in this file depends on but which we have no reason to disturb.
   bool autoStartConfigured = false;
+  // NEW: number of controller ticks (post-reset) during which walking stays
+  // held off (Stop forced true) even though autoStartConfigured re-arms
+  // activate()/Stop=false immediately. The stabilizer/CoM tracking (active)
+  // stays fully engaged throughout -- this only delays the first step, not
+  // the controller's own stabilization -- giving the physics/contact state
+  // (and whatever observer settling remains) a few ticks to become
+  // consistent with the freshly-teleported reset pose before ISMPC commits
+  // to a footstep plan against it. 0 means "no settle window" (disabled).
+  int postResetSettleTicksRemaining = 0;
+  static constexpr int kPostResetSettleTicks = 500;
 
   bool Use_w = true;
   Eigen::Vector3d w_ = Eigen::Vector3d::Zero();
