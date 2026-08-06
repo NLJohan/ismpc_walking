@@ -327,6 +327,12 @@ void Walking_controller::ComputeWalkingTrajectory()
 {
   mc_rtc::clock::time_point t_clock = mc_rtc::clock::now();
 
+  // Cleared here, at the top of every solve, so ismpc_wants_stop always
+  // reflects only THIS solve's assessment (set below, at the two
+  // autonomous-stop sites) rather than latching true forever once ISMPC
+  // has ever wanted to stop once. See its declaration in the header.
+  ismpc_wants_stop = false;
+
   {
     std::lock_guard<std::mutex> lk_copy_state(mutex_mpc_);
     UpdateInitialVectors();
@@ -444,8 +450,12 @@ void Walking_controller::ComputeWalkingTrajectory()
     if(std::abs(MPCSolver.stability_error().x()) > controller_config_.max_stability_error
        || std::abs(MPCSolver.stability_error().y()) > controller_config_.max_stability_error && !StepRecoveryState)
     {
-      mc_rtc::log::error("MPC result is too far from stability condition, stopping");
-      Stop = true;
+      // Advisory only: the policy has full authority over Stop (see
+      // policyWantsWalk/SetPolicyWantsWalk). This no longer forces Stop --
+      // it only records ISMPC's own opinion for the policy to observe and
+      // learn from via ismpcWantsStop().
+      mc_rtc::log::error("MPC result is too far from stability condition (advisory, policy has final say)");
+      ismpc_wants_stop = true;
     }
   }
   else
@@ -457,8 +467,9 @@ void Walking_controller::ComputeWalkingTrajectory()
     mpc_state_.QPSuccess = false;
     if(!StepRecoveryState)
     {
-      mc_rtc::log::error("MPC failed, stopping");
-      Stop = true;
+      // Advisory only -- see comment above.
+      mc_rtc::log::error("MPC failed (advisory, policy has final say)");
+      ismpc_wants_stop = true;
     }
   }
 }
@@ -471,7 +482,7 @@ void Walking_controller::UpdatePlanner_input()
   Eigen::Vector3d step_velocity = reference_velocity;
   double step_time = T_Steps;
 
-  if(StepRecoveryState || postResetSettleTicksRemaining > 0)
+  if(StepRecoveryState)
   {
     step_velocity.setZero();
   }
@@ -649,19 +660,10 @@ bool Walking_controller::run()
     mpc_state_.Index += 1;
   }
 
-  if(postResetSettleTicksRemaining > 0)
-  {
-    --postResetSettleTicksRemaining;
-    if(postResetSettleTicksRemaining == 0)
-    {
-      // Settle window elapsed: let the walking-gate below start stepping on
-      // the NEXT tick that satisfies it (Stop is only ever a gate, not a
-      // one-shot trigger, so clearing it here just stops holding double
-      // support artificially).
-      Stop = false;
-    }
-  }
-
+  // Stop is no longer mutated here: it is set exclusively via
+  // SetPolicyWantsWalk() (the bridge entry point), which the RL policy
+  // calls every action period. See policyWantsWalk's declaration in the
+  // header for the full design rationale.
   if(!(Stop && doubleSupport_state))
   {
     Robot_Walking = true;
@@ -1235,23 +1237,22 @@ void Walking_controller::reset(const mc_control::ControllerResetData & reset_dat
   if(autoStartConfigured)
   {
     activate();
-    // NEW: don't clear Stop immediately. Walking_controller stays `active`
-    // (stabilizer/CoM tracking engaged, MoveCoM() still runs every tick) but
-    // MoveFeet()/stepping is gated behind `!(Stop && doubleSupport_state)`
-    // in run() -- holding Stop=true for a short settle window keeps the
-    // robot in double support, controller "still active, just not walking"
-    // (per discussion), rather than letting ISMPC commit to a footstep plan
-    // on frame 0 of the fresh reset pose before the physics/contact state
-    // has had a chance to settle. postResetSettleTicksRemaining counts down
-    // in run(); Stop clears there once it reaches 0.
-    Stop = true;
-    postResetSettleTicksRemaining = kPostResetSettleTicks;
+    // Policy has full, unconditional authority over walking from tick 0 --
+    // no hardcoded settle window. Default to not walking (Stop=true) purely
+    // as a safe starting point until the policy's first SetPolicyWantsWalk()
+    // call; the policy may request walking immediately if it chooses to.
+    // Walking_controller stays `active` (stabilizer/CoM tracking engaged,
+    // MoveCoM() still runs every tick) regardless -- this only concerns
+    // MoveFeet()/stepping, gated behind `!(Stop && doubleSupport_state)`.
+    policyWantsWalk = true;
+    Stop = false;
     N_Steps_Desired = N_Steps_Desired_std;
   }
   else
   {
     deactivate();
-    postResetSettleTicksRemaining = 0;
+    policyWantsWalk = false;
+    Stop = true;
   }
   autoStart = false;
 

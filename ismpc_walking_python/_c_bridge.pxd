@@ -24,3 +24,9 @@ cdef extern from "ismpc_walking_bridge.h":
                                                 double vx,
                                                 double vy,
                                                 double wz) except+
+
+  cppbool ismpc_walking_set_policy_wants_walk(object py_ctl,
+                                               cppbool enabled) except+
+
+  cppbool ismpc_walking_get_ismpc_wants_stop(object py_ctl,
+                                              cppbool & value) except+

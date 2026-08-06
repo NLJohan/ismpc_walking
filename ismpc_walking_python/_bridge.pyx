@@ -63,3 +63,41 @@ def set_reference_velocity(ctl, double vx, double vy, double wz):
     ctl, vx, vy, wz
   )
   return ok
+
+
+def set_policy_wants_walk(ctl, bint enabled):
+  """Push the RL policy's walk/stop decision into the running ISMPC
+  walking controller.
+
+  `ctl` should be an mc_control.MCController instance. Returns True if it
+  was actually a Walking_controller and the call landed, False otherwise
+  (e.g. wrong controller loaded -- caller should treat that as "nothing
+  happened", not as an error).
+
+  The policy has full, unconditional authority: this directly sets the
+  controller's Stop flag (Stop = not enabled), overriding whatever ISMPC's
+  own autonomous safety logic would otherwise have wanted -- see
+  get_ismpc_wants_stop() for that advisory (non-gating) signal.
+  """
+  cdef cppbool ok = c_bridge.ismpc_walking_set_policy_wants_walk(
+    ctl, <cppbool> enabled
+  )
+  return ok
+
+
+def get_ismpc_wants_stop(ctl):
+  """ISMPC's own safety opinion from the most recent MPC solve, or None
+  if unavailable.
+
+  True means ISMPC's internal logic would have stopped walking on its own
+  this solve (excessive stability error, or QP failure) -- independent of
+  whatever the policy actually commanded via set_policy_wants_walk(). This
+  is advisory/observational only: it does NOT reflect the controller's
+  actual Stop state, which the policy has full authority over. Reflects
+  only the most recent solve, not accumulated history.
+  """
+  cdef cppbool value = False
+  cdef cppbool ok = c_bridge.ismpc_walking_get_ismpc_wants_stop(ctl, value)
+  if not ok:
+    return None
+  return bool(value)

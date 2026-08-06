@@ -159,3 +159,63 @@ inline bool ismpc_walking_set_reference_velocity(PyObject * py_ctl,
   walking->SetReferenceVelocity(Eigen::Vector3d{vx, vy, wz});
   return true;
 }
+
+/**
+ * @brief Push the RL policy's walk/stop decision into the running ISMPC
+ * walking controller. The policy has full, unconditional authority: this
+ * sets Stop directly (Stop = !enabled), overriding whatever ISMPC's own
+ * autonomous safety logic would otherwise have wanted (see
+ * ismpc_walking_get_ismpc_wants_stop below for that advisory signal).
+ *
+ * @param py_ctl  A Python mc_control.MCController object.
+ * @param enabled True to request walking, false to request stopping.
+ * @return true if py_ctl was actually a Walking_controller and the call
+ *         landed, false otherwise (caller should treat false as "nothing
+ *         happened", not necessarily an error -- see notes in step_env).
+ */
+inline bool ismpc_walking_set_policy_wants_walk(PyObject * py_ctl, bool enabled)
+{
+  auto * ctl = ismpc_walking_unwrap_mc_controller(py_ctl);
+  if(ctl == nullptr)
+  {
+    return false;
+  }
+  auto * walking = dynamic_cast<Walking_controller *>(ctl);
+  if(walking == nullptr)
+  {
+    return false;
+  }
+  walking->SetPolicyWantsWalk(enabled);
+  return true;
+}
+
+/**
+ * @brief Read back ISMPC's own safety opinion from the most recent MPC
+ * solve -- true if ISMPC's internal logic would have stopped walking on
+ * its own (excessive stability error, or QP failure), independent of
+ * whatever the policy actually commanded via
+ * ismpc_walking_set_policy_wants_walk. This is advisory/observational
+ * only: it does NOT reflect the controller's actual Stop state, which the
+ * policy has full authority over. Cleared to false at the start of every
+ * MPC solve, so it always reflects only the most recent solve, not history.
+ *
+ * @param py_ctl A Python mc_control.MCController object.
+ * @param value  Out-param, set to ISMPC's opinion if this returns true.
+ * @return true if py_ctl was actually a Walking_controller and the call
+ *         landed, false otherwise.
+ */
+inline bool ismpc_walking_get_ismpc_wants_stop(PyObject * py_ctl, bool & value)
+{
+  auto * ctl = ismpc_walking_unwrap_mc_controller(py_ctl);
+  if(ctl == nullptr)
+  {
+    return false;
+  }
+  auto * walking = dynamic_cast<Walking_controller *>(ctl);
+  if(walking == nullptr)
+  {
+    return false;
+  }
+  value = walking->ismpcWantsStop();
+  return true;
+}

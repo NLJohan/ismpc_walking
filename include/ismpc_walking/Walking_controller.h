@@ -264,6 +264,26 @@ public:
     velocityControl = true;
   }
 
+  // Policy-driven walk gate (see policyWantsWalk's declaration for full
+  // rationale). The policy has full, unconditional authority: this
+  // unconditionally sets Stop, overriding whatever ISMPC's own autonomous
+  // safety logic would otherwise have wanted (see ismpc_wants_stop).
+  void SetPolicyWantsWalk(bool enabled) noexcept
+  {
+    policyWantsWalk = enabled;
+    Stop = !enabled;
+  }
+
+  // Read-only observation of ISMPC's own safety opinion this MPC solve --
+  // see ismpc_wants_stop's declaration. Does NOT reflect the policy's
+  // decision or the controller's actual walking state (Robot_Walking);
+  // it is purely "did ISMPC's own logic want to stop, independent of what
+  // actually happened to Stop."
+  bool ismpcWantsStop() const noexcept
+  {
+    return ismpc_wants_stop;
+  }
+
   void SwitchFootSupport_manual()
   {
     if(!Robot_Walking)
@@ -617,16 +637,32 @@ private:
   // changing autoStart's own established meaning/lifecycle, which nothing
   // else in this file depends on but which we have no reason to disturb.
   bool autoStartConfigured = false;
-  // NEW: number of controller ticks (post-reset) during which walking stays
-  // held off (Stop forced true) even though autoStartConfigured re-arms
-  // activate()/Stop=false immediately. The stabilizer/CoM tracking (active)
-  // stays fully engaged throughout -- this only delays the first step, not
-  // the controller's own stabilization -- giving the physics/contact state
-  // (and whatever observer settling remains) a few ticks to become
-  // consistent with the freshly-teleported reset pose before ISMPC commits
-  // to a footstep plan against it. 0 means "no settle window" (disabled).
-  int postResetSettleTicksRemaining = 0;
-  static constexpr int kPostResetSettleTicks = 500;
+  // Policy-controlled walk gate, replacing the old fixed post-reset settle
+  // timer entirely. Stop is now purely derived from this: Stop = !policyWantsWalk,
+  // set exclusively via SetPolicyWantsWalk() (the bridge entry point). The
+  // policy has full, unconditional authority over walking -- including
+  // overriding ISMPC's own autonomous safety-stop logic (see
+  // ismpc_wants_stop below): the two autonomous-stop sites in
+  // ComputeWalkingTrajectory() no longer write Stop themselves, only
+  // ismpc_wants_stop. Defaults to false on reset() (see reset()'s tail), so
+  // a fresh episode starts in a safe, non-walking state until the policy
+  // explicitly requests walking -- no hardcoded floor beyond that single
+  // default; the policy may request walking on tick 0 if it chooses to.
+  bool policyWantsWalk = false;
+
+  // ISMPC's OWN safety opinion, read-only/informational: set true whenever
+  // ISMPC's internal logic would have stopped walking on its own this MPC
+  // solve (excessive stability error, or QP failure -- see
+  // ComputeWalkingTrajectory()), even though the policy's request
+  // (policyWantsWalk) still wins and Stop is never forced by this flag.
+  // Exposed via the bridge as a read-only observation (see
+  // ismpcWantsStop()) so the policy can learn to react to -- or
+  // preemptively avoid -- situations where ISMPC disagrees with its walk
+  // decision. Cleared to false at the START of every
+  // ComputeWalkingTrajectory() call (not accumulated/latched across
+  // solves), so it always reflects only the MOST RECENT MPC solve's
+  // assessment, not history.
+  bool ismpc_wants_stop = false;
 
   bool Use_w = true;
   Eigen::Vector3d w_ = Eigen::Vector3d::Zero();
