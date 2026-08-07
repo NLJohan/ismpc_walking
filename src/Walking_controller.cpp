@@ -1244,8 +1244,8 @@ void Walking_controller::reset(const mc_control::ControllerResetData & reset_dat
     // Walking_controller stays `active` (stabilizer/CoM tracking engaged,
     // MoveCoM() still runs every tick) regardless -- this only concerns
     // MoveFeet()/stepping, gated behind `!(Stop && doubleSupport_state)`.
-    policyWantsWalk = true;
-    Stop = false;
+    policyWantsWalk = false;
+    Stop = true;
     N_Steps_Desired = N_Steps_Desired_std;
   }
   else
