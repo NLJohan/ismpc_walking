@@ -424,6 +424,13 @@ void Walking_controller::ComputeWalkingTrajectory()
     // Time-Varying Fix: CoM_height and eta_vec must be refreshed in lockstep with X_MPC/Y_MPC,
     // since Get_CoM_planarTarget(indx) and getEta(indx) index into all three with the same indx.
     mpc_thread_state.CoM_height = MPCSolver.CoM_height_vec();
+    // CoM-height feedforward: same lockstep-refresh requirement as CoM_height
+    // above, consumed by Get_CoMVel_planarTarget's z-component and
+    // Get_CoMHeightAccel_target. May be empty (see those accessors' doc
+    // comments) for signal cases without a closed-form derivative -- both
+    // MPC_state accessors already fall back to 0 in that case.
+    mpc_thread_state.CoM_height_vel = MPCSolver.CoM_height_vel_vec();
+    mpc_thread_state.CoM_height_acc = MPCSolver.CoM_height_acc_vec();
     mpc_thread_state.eta_vec = MPCSolver.eta_vec();
     mpc_thread_state.Index = 1 + static_cast<int>(mpc_thread_process_time * 1e-3 / controller_timestep);
     mpc_thread_state.SupPolygon = MPCSolver.get_polynome_support();
@@ -785,13 +792,18 @@ void Walking_controller::MoveCoM()
   // CoM_height vector) instead of being hardcoded to the constant comHeight. The support-foot
   // and swing-foot z offsets are preserved, now added on top of the time-varying value.
 
-  p_com.z() += X_0_support.translation().z();
+  // p_com.z() += X_0_support.translation().z();
   if(!doubleSupport_state && swing_foot_contact)
   {
     p_com.z() = mpc_state_.Get_CoM_planarTarget(mpc_state_.Index).z() + robot().surfacePose(swingFootName).translation().z();
   }
   Eigen::Vector3d Vc(mpc_state_.Get_CoMVel_planarTarget(mpc_state_.Index));
-  Vc.z() = 0;
+  // CoM-height feedforward: Vc.z() now comes from Get_CoMVel_planarTarget's
+  // z-component (mpc_state_.CoM_height_vel[Index], the solver's analytic
+  // zc_dot for the current sine reference) instead of being hardcoded to 0.
+  // Falls back to 0 automatically (via Get_CoMVel_planarTarget's own bounds
+  // check) for signal cases/cold-start conditions where CoM_height_vel is
+  // empty, so this is safe even before the first populated solve.
   zmpTarget = mpc_state_.Get_ZMP_planarTarget(mpc_state_.Index);
 
   lc_dot_target = mpc_state_.get_Lc_dot(0);
@@ -829,7 +841,20 @@ void Walking_controller::MoveCoM()
   }
 
   Eigen::Vector3d acc_com = std::pow(eta_now, 2) * (mpc_state_.p_c_k - zmpTarget) + deltaLc;
-  acc_com.z() = 0;
+  // CoM-height feedforward: acc_com.z() now comes from the solver's analytic
+  // zc_ddot for the current sine reference (mpc_state_.CoM_height_acc[Index],
+  // the SAME value already used internally to compute eta_now via
+  // ISMPC_Solver's m_eta[i] = sqrt((zc_ddot + g) / CoM_height[i]) -- now also
+  // exposed here as an explicit feedforward term instead of being discarded
+  // after that eta computation. Unlike Vc.z() above, this does not replace a
+  // LIPM-model-derived x/y quantity: acc_com's x/y come from the pendulum
+  // model (eta_now^2 * (p_c_k - zmpTarget)); z was previously just an
+  // unconditional 0 with no equivalent physical derivation, so this is a
+  // genuinely new feedforward term, not a substitution of one signal for
+  // another. Falls back to 0 (via Get_CoMHeightAccel_target's own bounds
+  // check) for signal cases/cold-start conditions where CoM_height_acc is
+  // empty.
+  acc_com.z() = mpc_state_.Get_CoMHeightAccel_target(static_cast<size_t>(mpc_state_.Index));
   admittanceTarget = mpc_state_.delayed_zmp_ + mpc_state_.get_u(0);
   admittanceTarget.z() = 0;
 

@@ -25,10 +25,39 @@ struct MPC_state
   {
     if(indx < X_MPC.size())
     {
-      return Eigen::Vector3d{X_MPC[indx][1], Y_MPC[indx][1], 0};
+      // Time-Varying Fix (CoM-height feedforward): z used to be hardcoded to 0
+      // here, discarding the solver's analytic zc_dot feedforward the same way
+      // Get_CoM_planarTarget's z was hardcoded before the earlier Time-Varying
+      // Fix. CoM_height_vel must be populated (same indexing/size as X_MPC/
+      // Y_MPC/CoM_height) by the controller from ISMPC_Solver::CoM_height_vel_vec()
+      // every time X_MPC/Y_MPC are refreshed -- see that accessor's own doc
+      // comment for which signal cases actually populate it (empty otherwise,
+      // hence the fallback to 0 here rather than an out-of-range read).
+      const double zdot = (indx < CoM_height_vel.size()) ? CoM_height_vel[indx] : 0.0;
+      return Eigen::Vector3d{X_MPC[indx][1], Y_MPC[indx][1], zdot};
     }
     std::cout << "[CoMd access] Warning wrong index returning 0 vector" << std::endl;
     return Eigen::Vector3d::Zero();
+  }
+
+  /**
+   * Analogous to Get_CoMVel_planarTarget, but for the analytic CoM-height
+   * ACCELERATION feedforward (CoM_height_acc, from
+   * ISMPC_Solver::CoM_height_acc_vec()). Only the z-component is meaningful
+   * here (unlike Get_CoM_planarTarget/Get_CoMVel_planarTarget, there is no
+   * existing planar-XY acceleration signal in X_MPC/Y_MPC to pair it with,
+   * so this returns z alone rather than a padded/misleading Vector3d) --
+   * callers wanting a feedforward acceleration term should read this
+   * directly into the z-component of their own acc_com vector, not treat
+   * the return value as a drop-in replacement for a planar acceleration.
+   */
+  double Get_CoMHeightAccel_target(const size_t indx)
+  {
+    if(indx < CoM_height_acc.size())
+    {
+      return CoM_height_acc[indx];
+    }
+    return 0.0;
   }
 
   Eigen::Vector3d Get_ZMP_planarTarget(const size_t indx)
@@ -183,6 +212,15 @@ struct MPC_state
   // Must be populated from ISMPC_Solver::CoM_height_vec() every time X_MPC/Y_MPC are refreshed.
   std::vector<double> CoM_height;
   double default_CoM_height = 0.78; // fallback only, used if CoM_height is unpopulated/out of range
+  // Time-Varying Fix (CoM-height feedforward): analytic first/second time-
+  // derivatives of CoM_height, same indexing/size as CoM_height/X_MPC/Y_MPC.
+  // Must be populated from ISMPC_Solver::CoM_height_vel_vec()/
+  // CoM_height_acc_vec() every time X_MPC/Y_MPC are refreshed -- empty for
+  // signal cases that don't compute a genuine closed-form derivative (see
+  // those accessors' doc comments in ISMPC_Solver.h). Consumed by
+  // Get_CoMVel_planarTarget's z-component and Get_CoMHeightAccel_target.
+  std::vector<double> CoM_height_vel;
+  std::vector<double> CoM_height_acc;
   // Time-Varying Fix: per-horizon-step pendulum frequency, same indexing/size as X_MPC/Y_MPC.
   // Must be populated from ISMPC_Solver::eta_vec() every time X_MPC/Y_MPC are refreshed.
   std::vector<double> eta_vec;
@@ -264,6 +302,8 @@ void ClearSolveState()
   X_MPC.clear();
   Y_MPC.clear();
   CoM_height.clear();
+  CoM_height_vel.clear();
+  CoM_height_acc.clear();
   eta_vec.clear();
   SupPolygon.clear();
   FeasibilityPolygon.clear();

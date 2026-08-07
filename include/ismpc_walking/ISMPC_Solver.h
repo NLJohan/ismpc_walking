@@ -284,6 +284,32 @@ public:
   }
 
   /**
+   * Returns the analytic feedforward CoM-height VELOCITY z_c_dot(t) accompanying
+   * CoM_height_vec(), for signal cases that have a genuine closed-form derivative
+   * (Sine, RlSine). Empty for signal cases that don't populate it (Step; and
+   * PerStepCosine currently -- see its case block's comment). Callers (e.g.
+   * Walking_controller::MoveCoM()) must check .empty()/.size() before indexing,
+   * exactly as they must already do for CoM_height_vec() at cold start.
+   */
+  const std::vector<double> & CoM_height_vel_vec() const noexcept
+  {
+    return CoM_height_vel;
+  }
+
+  /**
+   * Returns the analytic feedforward CoM-height ACCELERATION z_c_ddot(t)
+   * accompanying CoM_height_vec() -- the SAME value already computed and
+   * consumed internally as zc_ddot to build m_eta[i] (see the RlSine/Sine
+   * case blocks), now also retained here so the whole-body controller can
+   * use it as a feedforward term instead of it being discarded after the
+   * eta computation. Same emptiness/sizing caveats as CoM_height_vel_vec().
+   */
+  const std::vector<double> & CoM_height_acc_vec() const noexcept
+  {
+    return CoM_height_acc;
+  }
+
+  /**
    * Returns the initial DCM used in the MPC in the world frame
    */
   const Eigen::Vector3d & Puk() const noexcept
@@ -713,7 +739,18 @@ private:
   std::vector<double> m_eta; // Prendulum frequency
   std::vector<double> m_eta_free; // Prendulum frequency disturbance free
   std::vector<double> CoM_height;
-  double CoM_height_avg = 0.78;
+  // Analytic first/second time-derivatives of CoM_height[i], populated ONLY
+  // for signal cases whose z(t) is smooth and has a genuine closed form
+  // (Sine, RlSine; PerStepCosine reserved for a later pass -- see its case
+  // block). Step's case is a true mathematical step and has neither. Sized
+  // and filled in lockstep with CoM_height every solve; NOT filled/cleared
+  // by cases that don't compute them, so callers must not assume staleness
+  // is detectable from size alone across an active-signal-type change --
+  // this codebase only ever runs one test_signal (compile-time constant),
+  // so that situation does not currently arise in practice.
+  std::vector<double> CoM_height_vel;
+  std::vector<double> CoM_height_acc;
+  double CoM_height_avg = 0.74;
 
   // --- Variable-height Riccati stability kernel (Compute_Riccati_Kernel / Compute_Hk_And_bfree) ---
   // All sized N_fine+1 with N_fine = m_C * m_riccati_substeps; index N_fine is the tail node at t0+Tc.
@@ -725,9 +762,9 @@ private:
   std::vector<double> m_K_kernel; // K(t0,t) = beta(t) * exp(-B(t0,t))
   std::vector<double> m_G_kernel; // Closed-loop kernel G(t0,s), backward recursion, tail-seeded
   std::vector<double> m_S_cum; // S(t0,s) = integral_s^inf G(t0,tau) dtau, backward cumulative, tail-seeded
-  double m_com_z_amplitude = 0.1; // Amplitude of the CoM height oscillation (metres)
+  double m_com_z_amplitude = 0.15; // Amplitude of the CoM height oscillation (metres)
   double m_com_z_test_t0 = 15.0;      // Step-test trigger time (s), wall-clock, replaces old hardcoded 15.0
-  double m_com_z_test_period = 2.0;   // Sine-test period (s), wall-clock
+  double m_com_z_test_period = 1.0;   // Sine-test period (s), wall-clock
   // Elapsed time since the start of the current step cycle, used to compute
   // the phase-based CoM height profile. Reset to 0 at each step switch.
   double m_tk_within_step = 0.0;

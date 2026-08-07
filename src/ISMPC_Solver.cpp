@@ -213,7 +213,7 @@ void ISMPC_Solver::init_MPC(const MPC_state & mpc_state, std::string Tail, int S
     RlSine // RL-driven sine: offset/amplitude/frequency/phase from
            // SetCoMHeightSineParams(), set externally each control period.
   };
-  constexpr CoMHeightTestSignal test_signal = CoMHeightTestSignal::RlSine;
+  constexpr CoMHeightTestSignal test_signal = CoMHeightTestSignal::Sine;
 
   switch(test_signal)
   {
@@ -290,13 +290,20 @@ void ISMPC_Solver::init_MPC(const MPC_state & mpc_state, std::string Tail, int S
       // exact z_ddot fed forward (unlike the Step case above, here a smooth feedforward IS
       // physically meaningful and should be supplied, since the reference itself is smooth).
       const double omega_test = 2.0 * M_PI / std::max(m_com_z_test_period, 1e-6);
+      CoM_height_vel.resize(static_cast<size_t>(m_C));
+      CoM_height_acc.resize(static_cast<size_t>(m_C));
       for(int i = 0; i < m_C; ++i)
       {
         const double t_i = m_t_global + static_cast<double>(i) * m_delta; // absolute time of sample i
         const double phase = omega_test * t_i;
+        const double sin_phase = std::sin(phase);
+        const double cos_phase = std::cos(phase);
 
-        CoM_height[i] = CoM_height_avg + m_com_z_amplitude * std::sin(phase);
-        const double zc_ddot = -m_com_z_amplitude * omega_test * omega_test * std::sin(phase);
+        CoM_height[i] = CoM_height_avg + m_com_z_amplitude * sin_phase;
+        const double zc_dot = m_com_z_amplitude * omega_test * cos_phase;
+        const double zc_ddot = -m_com_z_amplitude * omega_test * omega_test * sin_phase;
+        CoM_height_vel[i] = zc_dot;
+        CoM_height_acc[i] = zc_ddot;
 
         m_eta[i] = std::sqrt((zc_ddot + g) / CoM_height[i]);
         m_eta_free[i] = m_eta[i];
@@ -310,13 +317,23 @@ void ISMPC_Solver::init_MPC(const MPC_state & mpc_state, std::string Tail, int S
       // from SetCoMHeightSineParams() instead of the fixed test constants.
       // The caller (mc_mjlab) is responsible for offset - amplitude >= 0.
       const double omega = 2.0 * M_PI * m_rl_com_z_frequency;
+      CoM_height_vel.resize(static_cast<size_t>(m_C));
+      CoM_height_acc.resize(static_cast<size_t>(m_C));
       for(int i = 0; i < m_C; ++i)
       {
         const double t_i = m_t_global + static_cast<double>(i) * m_delta;
         const double phase = omega * t_i + m_rl_com_z_phase;
+        const double sin_phase = std::sin(phase);
+        const double cos_phase = std::cos(phase);
 
-        CoM_height[i] = m_rl_com_z_offset + m_rl_com_z_amplitude * std::sin(phase);
-        const double zc_ddot = -m_rl_com_z_amplitude * omega * omega * std::sin(phase);
+        CoM_height[i] = m_rl_com_z_offset + m_rl_com_z_amplitude * sin_phase;
+        // z(t)  = offset + A*sin(w t + phi)
+        // zdot  = A*w*cos(w t + phi)
+        // zddot = -A*w^2*sin(w t + phi)
+        const double zc_dot = m_rl_com_z_amplitude * omega * cos_phase;
+        const double zc_ddot = -m_rl_com_z_amplitude * omega * omega * sin_phase;
+        CoM_height_vel[i] = zc_dot;
+        CoM_height_acc[i] = zc_ddot;
 
         m_eta[i] = std::sqrt((zc_ddot + g) / CoM_height[i]);
         m_eta_free[i] = m_eta[i];
