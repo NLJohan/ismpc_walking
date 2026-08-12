@@ -213,7 +213,7 @@ void ISMPC_Solver::init_MPC(const MPC_state & mpc_state, std::string Tail, int S
     RlSine // RL-driven sine: offset/amplitude/frequency/phase from
            // SetCoMHeightSineParams(), set externally each control period.
   };
-  constexpr CoMHeightTestSignal test_signal = CoMHeightTestSignal::Sine;
+  constexpr CoMHeightTestSignal test_signal = CoMHeightTestSignal::RlSine;
 
   switch(test_signal)
   {
