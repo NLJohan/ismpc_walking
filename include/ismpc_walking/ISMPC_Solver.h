@@ -167,6 +167,18 @@ public:
   void ResetEpisodeState();
 
   /**
+   * Dump EVERY private/protected member of this class via mc_rtc::log::warning,
+   * tagged with `tag` so two calls (e.g. "episode_N_start" / "episode_N+1_start")
+   * can be grepped and diffed directly from the log file to prove -- not infer --
+   * whether any state survives an RL episode boundary. See ISMPC_Solver.cpp for
+   * the full member list this covers (164 of 170 declared members; QP, an internal
+   * QuadProgDense working object rebuilt fresh every solveQP() call, is the only
+   * deliberate exclusion; the remaining 5 non-member tokens were parser noise).
+   * Diagnostic only -- no effect on control.
+   */
+  void DumpState(const std::string & tag);
+
+  /**
    * Returns the computed trajectory, each vector3d in the vector contains the CoM , CoMd and ZMP value for a time step
    */
   const std::vector<Eigen::Vector3d> & X_MPC() const noexcept
@@ -853,7 +865,7 @@ private:
   double m_Beta_dcm_stop = 1000;
   double m_Beta_dcm_vel = 0;
   double m_Beta_dcm_vel_stop = 1000;
-  double m_lambda = 100;
+  double m_lambda = 20;
   double m_delay = 0; // delay ( < m_delta ) during which zmp is under previous input Uk
   double m_delay_elapsed = 0; // Between 0 and m_delay represent the remaining time the delay must be applied
   double m_t_delay = 0; // represent when the delay has been applied

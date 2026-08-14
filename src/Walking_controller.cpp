@@ -1089,12 +1089,20 @@ void Walking_controller::reset(const mc_control::ControllerResetData & reset_dat
   // this should never print NextOptimalTs=nan again once ResetEpisodeState()
   // is wired in below and working.
   {
-    const auto ts = MPCSolver.timesteps();
-    mc_rtc::log::warning("[reset][solver_inherited] NextOptimalTs={} m_feas_res={} timesteps_empty={} "
-                          "timesteps_front={}",
-                          MPCSolver.PeekNextOptimalTs(), MPCSolver.PeekFeasRes(), ts.empty(),
-                          ts.empty() ? 0.0 : ts.front());
+    // const auto ts = MPCSolver.timesteps();
+    // mc_rtc::log::warning("[reset][solver_inherited] NextOptimalTs={} m_feas_res={} timesteps_empty={} "
+    //                       "timesteps_front={}",
+    //                       MPCSolver.PeekNextOptimalTs(), MPCSolver.PeekFeasRes(), ts.empty(),
+    //                       ts.empty() ? 0.0 : ts.front());
   }
+  // FULL STATE DUMP for episode-boundary proof: tag includes `count` (this episode's
+  // pre-reset tick count, i.e. how long the PREVIOUS episode ran) so consecutive
+  // dumps can be paired up in the log and diffed directly, rather than inferred.
+  // Called here, at reset() ENTRY, BEFORE ResetEpisodeState() below runs -- this
+  // captures exactly what MPCSolver inherited from the end of the previous episode.
+  MPCSolver.DumpState("reset_enter_prevCount" + std::to_string(count));
+  mpc_state_.DumpState("reset_enter_prevCount" + std::to_string(count) + "_mpcstate");
+  mpc_thread_state.DumpState("reset_enter_prevCount" + std::to_string(count) + "_mpcthreadstate");
 
   mc_control::fsm::Controller::reset(reset_data);
 
@@ -1169,6 +1177,12 @@ void Walking_controller::reset(const mc_control::ControllerResetData & reset_dat
   // p_c_k/p_z_k/p_u/v_c_k re-apply below, order doesn't matter relative to
   // it, but must be present every reset.
   MPCSolver.ResetEpisodeState();
+  // Second dump, same tag family, immediately after ResetEpisodeState(): proves
+  // (rather than assumes) that the reset actually took effect this call, in the
+  // same log, right next to the pre-reset "inherited" dump above. NOTE: count is
+  // already 0 by this point (see count = 0 above) -- this tag intentionally does
+  // NOT include prevCount, to avoid implying it's still meaningful here.
+  MPCSolver.DumpState("reset_after_ResetEpisodeState");
   // Re-apply the fresh p_c_k/p_z_k/p_u/v_c_k set just above, since
   // ClearSolveState() zeroes them along with everything else.
   mpc_state_.p_c_k = robot().com();

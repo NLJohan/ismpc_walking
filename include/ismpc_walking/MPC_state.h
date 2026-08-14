@@ -282,6 +282,176 @@ struct MPC_state
   bool standing_mode = true;
   bool doubleSupport = true;
 
+  // Add this method inside struct MPC_state (MPC_state.h), e.g. right after
+  // ClearSolveState(). Call as mpc_state_.DumpState("some_tag") and
+  // mpc_thread_state.DumpState("some_tag_thread") at the same points
+  // Walking_controller::reset() already calls MPCSolver.DumpState(...) --
+  // see the reset_enter_prevCount*/reset_after_ResetEpisodeState tag pair.
+  //
+  // Covers every member declared in MPC_state.h. Vector/container fields print
+  // size plus front/back (or a representative element) rather than full
+  // contents, mirroring the horizonZmpRef_ front/back convention already used
+  // elsewhere in this investigation -- size alone would have hidden the
+  // horizonZmpRef_ staleness bug found earlier this session, so front/back is
+  // treated as the minimum useful signal for any container here.
+
+  void DumpState(const std::string & tag)
+  {
+    // --- Scalars, in declaration order. ---
+    mc_rtc::log::warning("[MPC_state][DumpState][{}] Tail={}", tag, Tail);
+    mc_rtc::log::warning("[MPC_state][DumpState][{}] kfoot={}", tag, kfoot);
+    mc_rtc::log::warning("[MPC_state][DumpState][{}] stab_error=({},{})", tag, stab_error.x(), stab_error.y());
+    mc_rtc::log::warning("[MPC_state][DumpState][{}] QPSuccess={}", tag, QPSuccess);
+    mc_rtc::log::warning("[MPC_state][DumpState][{}] Pu_min=({},{})", tag, Pu_min.x(), Pu_min.y());
+    mc_rtc::log::warning("[MPC_state][DumpState][{}] Pu_max=({},{})", tag, Pu_max.x(), Pu_max.y());
+    mc_rtc::log::warning("[MPC_state][DumpState][{}] alpha={}", tag, alpha);
+    mc_rtc::log::warning("[MPC_state][DumpState][{}] ref_zmp_=({},{})", tag, ref_zmp_.x(), ref_zmp_.y());
+    mc_rtc::log::warning("[MPC_state][DumpState][{}] Index={}", tag, Index);
+    mc_rtc::log::warning("[MPC_state][DumpState][{}] initial_zmp_=({},{},{})", tag, initial_zmp_.x(), initial_zmp_.y(),
+                          initial_zmp_.z());
+    mc_rtc::log::warning("[MPC_state][DumpState][{}] delayed_zmp_=({},{},{})", tag, delayed_zmp_.x(), delayed_zmp_.y(),
+                          delayed_zmp_.z());
+    mc_rtc::log::warning("[MPC_state][DumpState][{}] t_k={}", tag, t_k);
+    // t: NOT touched by ClearSolveState() and NOT mentioned in its doc comment
+    // (unlike every other solve-derived field) -- also has no default member
+    // initializer, unlike almost everything else in this struct. Flagged this
+    // session as a likely-missed reset target; dumped here specifically to
+    // check whether it carries a stale/garbage value across episode
+    // boundaries the same way t_k/NextOptimalTs did.
+    mc_rtc::log::warning("[MPC_state][DumpState][{}] t={} (NOT cleared by ClearSolveState -- check for staleness)",
+                          tag, t);
+    mc_rtc::log::warning("[MPC_state][DumpState][{}] t_lift={}", tag, t_lift);
+    mc_rtc::log::warning("[MPC_state][DumpState][{}] p_c_k=({},{},{})", tag, p_c_k.x(), p_c_k.y(), p_c_k.z());
+    mc_rtc::log::warning("[MPC_state][DumpState][{}] v_c_k=({},{},{})", tag, v_c_k.x(), v_c_k.y(), v_c_k.z());
+    mc_rtc::log::warning("[MPC_state][DumpState][{}] p_z_k=({},{},{})", tag, p_z_k.x(), p_z_k.y(), p_z_k.z());
+    mc_rtc::log::warning("[MPC_state][DumpState][{}] Uk=({},{},{})", tag, Uk.x(), Uk.y(), Uk.z());
+    mc_rtc::log::warning("[MPC_state][DumpState][{}] Lck=({},{},{})", tag, Lck.x(), Lck.y(), Lck.z());
+    mc_rtc::log::warning("[MPC_state][DumpState][{}] ComBias=({},{},{})", tag, ComBias.x(), ComBias.y(), ComBias.z());
+    mc_rtc::log::warning("[MPC_state][DumpState][{}] p_u=({},{},{})", tag, p_u.x(), p_u.y(), p_u.z());
+    mc_rtc::log::warning("[MPC_state][DumpState][{}] w=({},{},{})", tag, w.x(), w.y(), w.z());
+    mc_rtc::log::warning("[MPC_state][DumpState][{}] kappa={}", tag, kappa);
+    mc_rtc::log::warning("[MPC_state][DumpState][{}] input_eta={}", tag, input_eta);
+    mc_rtc::log::warning("[MPC_state][DumpState][{}] input_mass={}", tag, input_mass);
+    mc_rtc::log::warning("[MPC_state][DumpState][{}] eta={}", tag, eta);
+    mc_rtc::log::warning("[MPC_state][DumpState][{}] input_Support_FootName={}", tag, input_Support_FootName);
+    mc_rtc::log::warning("[MPC_state][DumpState][{}] X_0_SupportFoot.translation()=({},{},{})", tag,
+                          X_0_SupportFoot.translation().x(), X_0_SupportFoot.translation().y(),
+                          X_0_SupportFoot.translation().z());
+    mc_rtc::log::warning("[MPC_state][DumpState][{}] X_0_Initial_SwingFoot.translation()=({},{},{})", tag,
+                          X_0_Initial_SwingFoot.translation().x(), X_0_Initial_SwingFoot.translation().y(),
+                          X_0_Initial_SwingFoot.translation().z());
+    mc_rtc::log::warning("[MPC_state][DumpState][{}] X_0_SwingFoot.translation()=({},{},{})", tag,
+                          X_0_SwingFoot.translation().x(), X_0_SwingFoot.translation().y(),
+                          X_0_SwingFoot.translation().z());
+    mc_rtc::log::warning("[MPC_state][DumpState][{}] X_0_Step_Target.translation()=({},{},{})", tag,
+                          X_0_Step_Target.translation().x(), X_0_Step_Target.translation().y(),
+                          X_0_Step_Target.translation().z());
+    mc_rtc::log::warning("[MPC_state][DumpState][{}] tds={}", tag, tds);
+    mc_rtc::log::warning("[MPC_state][DumpState][{}] input_tds={}", tag, input_tds);
+    mc_rtc::log::warning("[MPC_state][DumpState][{}] optimal_tds={}", tag, optimal_tds);
+    mc_rtc::log::warning("[MPC_state][DumpState][{}] stop={}", tag, stop);
+    mc_rtc::log::warning("[MPC_state][DumpState][{}] standing_mode={}", tag, standing_mode);
+    mc_rtc::log::warning("[MPC_state][DumpState][{}] doubleSupport={}", tag, doubleSupport);
+    mc_rtc::log::warning("[MPC_state][DumpState][{}] default_CoM_height={}", tag, default_CoM_height);
+
+    // --- Containers: size + front/back (or a representative element), not
+    // full contents. Empty containers print a single "(empty)" line so an
+    // unexpectedly-nonempty one stands out clearly in a diff. ---
+    auto dump_vec3_container = [&](const char * name, const std::vector<Eigen::Vector3d> & v) {
+      if(v.empty())
+      {
+        mc_rtc::log::warning("[MPC_state][DumpState][{}] {}.size()=0 (empty)", tag, name);
+      }
+      else
+      {
+        mc_rtc::log::warning("[MPC_state][DumpState][{}] {}.size()={} front=({},{},{}) back=({},{},{})", tag, name,
+                              v.size(), v.front().x(), v.front().y(), v.front().z(), v.back().x(), v.back().y(),
+                              v.back().z());
+      }
+    };
+    auto dump_double_container = [&](const char * name, const std::vector<double> & v) {
+      if(v.empty())
+      {
+        mc_rtc::log::warning("[MPC_state][DumpState][{}] {}.size()=0 (empty)", tag, name);
+      }
+      else
+      {
+        mc_rtc::log::warning("[MPC_state][DumpState][{}] {}.size()={} front={} back={}", tag, name, v.size(),
+                              v.front(), v.back());
+      }
+    };
+    auto dump_pose_container = [&](const char * name, const std::vector<sva::PTransformd> & v) {
+      if(v.empty())
+      {
+        mc_rtc::log::warning("[MPC_state][DumpState][{}] {}.size()=0 (empty)", tag, name);
+      }
+      else
+      {
+        mc_rtc::log::warning(
+            "[MPC_state][DumpState][{}] {}.size()={} front.translation()=({},{},{}) back.translation()=({},{},{})",
+            tag, name, v.size(), v.front().translation().x(), v.front().translation().y(),
+            v.front().translation().z(), v.back().translation().x(), v.back().translation().y(),
+            v.back().translation().z());
+      }
+    };
+
+    dump_vec3_container("X_MPC", X_MPC);
+    dump_vec3_container("Y_MPC", Y_MPC);
+    dump_double_container("CoM_height", CoM_height);
+    dump_double_container("CoM_height_vel", CoM_height_vel);
+    dump_double_container("CoM_height_acc", CoM_height_acc);
+    dump_double_container("eta_vec", eta_vec);
+    dump_vec3_container("SupPolygon", SupPolygon);
+    dump_vec3_container("FeasibilityPolygon", FeasibilityPolygon);
+    // FeasibilityPolygonStandingSwitch: SupportPolygon type, not a plain
+    // vector -- dumped as size only unless SupportPolygon exposes something
+    // richer; check its own header if this needs more than size.
+    mc_rtc::log::warning("[MPC_state][DumpState][{}] FeasibilityPolygonStandingSwitch=<SupportPolygon, see its own "
+                          "type for a richer dump if needed>",
+                          tag);
+    if(Traj_ant.size() == 0)
+    {
+      mc_rtc::log::warning("[MPC_state][DumpState][{}] Traj_ant.size()=0 (empty)", tag);
+    }
+    else
+    {
+      mc_rtc::log::warning("[MPC_state][DumpState][{}] Traj_ant.size()={} front={} back={}", tag, Traj_ant.size(),
+                            Traj_ant(0), Traj_ant(Traj_ant.size() - 1));
+    }
+    dump_vec3_container("P_traj", P_traj);
+    dump_vec3_container("admittance_ref_", admittance_ref_);
+    if(mpc_u_.size() == 0)
+    {
+      mc_rtc::log::warning("[MPC_state][DumpState][{}] mpc_u_.size()=0 (empty)", tag);
+    }
+    else
+    {
+      mc_rtc::log::warning("[MPC_state][DumpState][{}] mpc_u_.size()={} front={} back={}", tag, mpc_u_.size(),
+                            mpc_u_(0), mpc_u_(mpc_u_.size() - 1));
+    }
+    if(mpc_Lc_dot_.size() == 0)
+    {
+      mc_rtc::log::warning("[MPC_state][DumpState][{}] mpc_Lc_dot_.size()=0 (empty)", tag);
+    }
+    else
+    {
+      mc_rtc::log::warning("[MPC_state][DumpState][{}] mpc_Lc_dot_.size()={} front={} back={}", tag,
+                            mpc_Lc_dot_.size(), mpc_Lc_dot_(0), mpc_Lc_dot_(mpc_Lc_dot_.size() - 1));
+    }
+    dump_vec3_container("QP_zmp", QP_zmp);
+    dump_vec3_container("QP_dcm", QP_dcm);
+    // input_v_: std::vector<sva::MotionVecd>, not ForceVecd/PTransformd/double
+    // -- dumped as size only for now; add a MotionVecd-specific lambda if
+    // front/back content turns out to matter here too.
+    mc_rtc::log::warning("[MPC_state][DumpState][{}] input_v_.size()={}", tag, input_v_.size());
+    dump_pose_container("input_ref_pose_", input_ref_pose_);
+    dump_pose_container("planned_steps_", planned_steps_);
+    dump_double_container("input_timesteps_", input_timesteps_);
+    dump_double_container("planned_timesteps_", planned_timesteps_);
+    dump_pose_container("optimal_steps_", optimal_steps_);
+    dump_double_container("optimal_timesteps_", optimal_timesteps_);
+  }
+
   /**
  * @brief Reset all solve-derived/horizon state to its "no MPC solve has
  * happened yet" values, without touching persistent-but-not-solve-derived
