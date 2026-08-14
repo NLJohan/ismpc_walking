@@ -36,6 +36,34 @@ ISMPC_Solver::ISMPC_Solver(double delta_controller, double delta, double Tp, dou
   perturbation_duration = 0;
 }
 
+void ISMPC_Solver::ResetEpisodeState()
+{
+  // These members are only conditionally (not unconditionally) rewritten by
+  // GetWalkingParameters() -- see the (NextOptimalTs - m_tk) > 0.1 gate at
+  // line ~1846 and the if(m_feas_res) branch at line ~1864 -- so they can
+  // silently carry a stale or NaN value from the previous episode's last
+  // solve() call straight across an RL episode boundary. This is what was
+  // confirmed via [reset][solver_inherited] debug prints: NextOptimalTs and
+  // m_timestamp.front() are already NaN at the very top of
+  // Walking_controller::reset(), before anything else runs, on episodes
+  // that go on to spam "ZMP cannot be computed". Restore construction-time
+  // defaults explicitly. Does NOT touch m_feasibilitySolver's own internal
+  // state -- untouched deliberately, tracked as separate follow-up work.
+  NextOptimalTs = 10;
+  m_feas_res = false;
+  m_Tds = 0.24;
+  m_input_Tds = 0;
+  m_timestamp.clear();
+  input_steps_.clear();
+  corr_steps_.clear();
+  QPsuccess = false;
+  InStabilityRange = false;
+  m_stop = true;
+
+  mc_rtc::log::warning("[ISMPC_Solver] ResetEpisodeState: NextOptimalTs={} m_feas_res={} m_Tds={}", NextOptimalTs,
+                        m_feas_res, m_Tds);
+}
+
 void ISMPC_Solver::configure(const ControllerConfiguration & config)
 {
   m_dx_f = config.MPC_Footsteps_kin_Constraint_size.x();
@@ -1866,7 +1894,15 @@ bool ISMPC_Solver::GetWalkingParameters(bool stop)
       m_timestamp = optimalTs;
       if(DoubleSupport)
       {
-        m_Tds = optimalTds[0];
+        if(!optimalTds.empty() && std::isfinite(optimalTds[0]))
+        {
+          m_Tds = optimalTds[0];
+        }
+        else
+        {
+          mc_rtc::log::warning("[ISMPC {}] optimalTds[0] invalid ({}), keeping previous m_Tds={}",
+                              m_t_global, optimalTds.empty() ? "empty" : std::to_string(optimalTds[0]), m_Tds);
+        }
       }
       m_feasibility_region = m_feasibilitySolver.get_feasibility_region();
     }
@@ -1889,6 +1925,10 @@ bool ISMPC_Solver::GetWalkingParameters(bool stop)
   }
 
   NextOptimalTs = m_timestamp[0];
+
+  mc_rtc::log::warning("[ISMPC {}] m_feas_res={} m_timestamp[0]={} NextOptimalTs={} m_tk={} gate=(NextOptimalTs-m_tk)={}",
+                     m_t_global, m_feas_res, m_timestamp[0], NextOptimalTs, m_tk, NextOptimalTs - m_tk);
+
   QPsuccess = false;
   InStabilityRange = false;
   m_stop = stop;

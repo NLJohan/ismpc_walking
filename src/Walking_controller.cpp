@@ -959,19 +959,6 @@ void Walking_controller::MoveCoM()
 
 void Walking_controller::UpdateInitialVectors()
 {
-  if(count < 5)
-  {
-    mc_rtc::log::warning(
-        "[UpdateInitialVectors ENTRY] count={} UseRealRobot={} UseMPCState={} debugMode={} "
-        "realRobotCom=({},{},{}) realRobotComVel=({},{},{}) simRobotCom=({},{},{}) simRobotComVel=({},{},{}) "
-        "biasDCM=({},{})",
-        count, UseRealRobot, UseMPCState, debugMode, realRobot().com().x(), realRobot().com().y(),
-        realRobot().com().z(), realRobot().comVelocity().x(), realRobot().comVelocity().y(),
-        realRobot().comVelocity().z(), robot().com().x(), robot().com().y(), robot().com().z(),
-        robot().comVelocity().x(), robot().comVelocity().y(), robot().comVelocity().z(), stabTask->biasDCM().x(),
-        stabTask->biasDCM().y());
-  }
-
   mpc_state_.t_k = t_k;
   mpc_state_.t_lift = t_lift;
   mpc_state_.doubleSupport = doubleSupport_state;
@@ -1087,61 +1074,32 @@ void Walking_controller::UpdateInitialVectors()
 
 void Walking_controller::reset(const mc_control::ControllerResetData & reset_data)
 {
-  mc_rtc::log::warning(
-      "[reset] ENTER Robot_Walking={} active={} Stop={} t_k={} count={} ref_vel=({},{},{}) N_Steps={}",
-      Robot_Walking, active, Stop, t_k, count, reference_velocity.x(), reference_velocity.y(),
-      reference_velocity.z(), N_Steps);
+  // mc_rtc::log::warning(
+  //     "[reset] ENTER Robot_Walking={} active={} Stop={} t_k={} count={} ref_vel=({},{},{}) N_Steps={}",
+  //     Robot_Walking, active, Stop, t_k, count, reference_velocity.x(), reference_velocity.y(),
+  //     reference_velocity.z(), N_Steps);
+
+  // DIAGNOSTIC: read MPCSolver's state exactly as inherited from the previous
+  // episode, before anything below (including ResetEpisodeState() further
+  // down) touches it. Confirmed via this print: NextOptimalTs/m_timestamp
+  // are already NaN at this point on episodes that go on to spam "ZMP
+  // cannot be computed" -- the corruption originates in the PREVIOUS
+  // episode's terminal ticks, not in anything reset() itself does or fails
+  // to do at kinematic-state level. Kept post-fix as a regression check:
+  // this should never print NextOptimalTs=nan again once ResetEpisodeState()
+  // is wired in below and working.
+  {
+    const auto ts = MPCSolver.timesteps();
+    mc_rtc::log::warning("[reset][solver_inherited] NextOptimalTs={} m_feas_res={} timesteps_empty={} "
+                          "timesteps_front={}",
+                          MPCSolver.PeekNextOptimalTs(), MPCSolver.PeekFeasRes(), ts.empty(),
+                          ts.empty() ? 0.0 : ts.front());
+  }
 
   mc_control::fsm::Controller::reset(reset_data);
 
-  // NEW: real fix for the post-reset garbage realRobot().comVelocity() issue
-  // (confirmed via debug prints: realRobot().com() is sane immediately after
-  // reset, but realRobot().comVelocity() reads e.g. 26-75 m/s and decays
-  // slowly over many ticks instead of snapping to zero -- the signature of
-  // an observer filter whose internal history spans the reset's
-  // discontinuous anchor-frame jump). mc_control::MCController exposes
-  // resetObserverPipelines() specifically for this: each Observer's own
-  // reset(const MCController&) "should make sure the observer is started in
-  // a state consistent with the current robot state" and is documented to
-  // be called after MCController::reset() -- which Walking_controller::reset()
-  // never did on its own. Calling it here, right after the base FSM reset
-  // and before UpdateInitialVectors() ever reads realRobot(), makes the
-  // KinematicInertial observer re-anchor against the freshly-reset robot
-  // state instead of carrying stale filter history across the episode
-  // boundary. This replaces the earlier "hold v_c_k at sim ground truth for
-  // N ticks" workaround in UpdateInitialVectors(), which only masked the
-  // symptom.
-  mc_rtc::log::warning(
-      "[reset] BEFORE resetObserverPipelines: leftFootPose=({},{},{}) rightFootPose=({},{},{}) robotCom=({},{},{}) "
-      "realRobotCom=({},{},{})",
-      robot().surfacePose(leftFootName_).translation().x(), robot().surfacePose(leftFootName_).translation().y(),
-      robot().surfacePose(leftFootName_).translation().z(), robot().surfacePose(rightFootName_).translation().x(),
-      robot().surfacePose(rightFootName_).translation().y(), robot().surfacePose(rightFootName_).translation().z(),
-      robot().com().x(), robot().com().y(), robot().com().z(), realRobot().com().x(), realRobot().com().y(),
-      realRobot().com().z());
   bool observerResetOk = resetObserverPipelines();
-  // NEW: resetObserverPipelines() only re-seeds each Observer's internal
-  // filter/history state -- confirmed via debug print that realRobot()'s
-  // pose/velocity were UNCHANGED immediately after this call, still holding
-  // the previous episode's stale estimate. Per mc_rtc's own Observer API,
-  // the function that actually writes into realRobots() is updateRobots(),
-  // which only runs after Observer::run(), and run() normally only executes
-  // as part of runObserverPipelines() on the controller's own next run()
-  // tick -- too late for UpdateInitialVectors() at count=0, which reads
-  // realRobot() before that tick's pipeline has had a chance to execute
-  // against the freshly-reset internal state. Explicitly run the pipeline
-  // once here, synchronously, so realRobots() is actually refreshed against
-  // the post-teleport sensor readings before anything reads it.
   bool observerRunOk = runObserverPipelines();
-  mc_rtc::log::warning(
-      "[reset] AFTER resetObserverPipelines()={} runObserverPipelines()={}: leftFootPose=({},{},{}) "
-      "rightFootPose=({},{},{}) realRobotCom=({},{},{}) realRobotComVel=({},{},{})",
-      observerResetOk, observerRunOk, robot().surfacePose(leftFootName_).translation().x(),
-      robot().surfacePose(leftFootName_).translation().y(), robot().surfacePose(leftFootName_).translation().z(),
-      robot().surfacePose(rightFootName_).translation().x(), robot().surfacePose(rightFootName_).translation().y(),
-      robot().surfacePose(rightFootName_).translation().z(), realRobot().com().x(), realRobot().com().y(),
-      realRobot().com().z(), realRobot().comVelocity().x(), realRobot().comVelocity().y(),
-      realRobot().comVelocity().z());
 
   stabTask->reset();
   mc_rbdyn::lipm_stabilizer::StabilizerConfiguration config_stab = controller_config_.stab_config;
@@ -1197,6 +1155,20 @@ void Walking_controller::reset(const mc_control::ControllerResetData & reset_dat
   // the previous episode before the MPC thread produces a fresh one.
   mpc_state_.ClearSolveState();
   mpc_thread_state.ClearSolveState();
+  // NEW: MPCSolver (an ISMPC_Solver) is a single member of Walking_controller
+  // constructed once for the whole controller lifetime -- it is never
+  // reconstructed per-episode, so without this call it silently inherits
+  // NextOptimalTs/m_timestamp/m_feas_res/m_Tds from the end of the PREVIOUS
+  // episode's last GetWalkingParameters() call, including a possible NaN.
+  // Confirmed via [reset][solver_inherited] prints above: this is the
+  // direct, sole cause of the permanent "ZMP cannot be computed" spam --
+  // once NextOptimalTs is NaN, (NextOptimalTs - m_tk) > 0.1 is false forever
+  // (IEEE-754 comparisons against NaN are always false), so the feasibility
+  // solver is never called again and the same NaN m_timestamp[0] is reused
+  // every tick for the rest of the episode. This must run BEFORE the
+  // p_c_k/p_z_k/p_u/v_c_k re-apply below, order doesn't matter relative to
+  // it, but must be present every reset.
+  MPCSolver.ResetEpisodeState();
   // Re-apply the fresh p_c_k/p_z_k/p_u/v_c_k set just above, since
   // ClearSolveState() zeroes them along with everything else.
   mpc_state_.p_c_k = robot().com();
@@ -1281,9 +1253,9 @@ void Walking_controller::reset(const mc_control::ControllerResetData & reset_dat
   }
   autoStart = false;
 
-  mc_rtc::log::warning(
-      "[reset] EXIT  Robot_Walking={} active={} Stop={} t_k={} count={} ref_vel=({},{},{}) N_Steps={} "
-      "autoStartConfigured={}",
-      Robot_Walking, active, Stop, t_k, count, reference_velocity.x(), reference_velocity.y(),
-      reference_velocity.z(), N_Steps, autoStartConfigured);
+  // mc_rtc::log::warning(
+  //     "[reset] EXIT  Robot_Walking={} active={} Stop={} t_k={} count={} ref_vel=({},{},{}) N_Steps={} "
+  //     "autoStartConfigured={}",
+  //     Robot_Walking, active, Stop, t_k, count, reference_velocity.x(), reference_velocity.y(),
+  //     reference_velocity.z(), N_Steps, autoStartConfigured);
 }

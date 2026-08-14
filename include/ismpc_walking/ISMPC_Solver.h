@@ -134,6 +134,39 @@ public:
   }
 
   /**
+   * Read-only diagnostic accessors -- NOT for control logic, only for
+   * confirming episode-boundary reset behaviour via logging. NextOptimalTs
+   * and m_feas_res are conditionally (not unconditionally) rewritten by
+   * GetWalkingParameters(), so they can silently carry a stale or NaN value
+   * from the previous episode across a Walking_controller::reset() call if
+   * ResetEpisodeState() below is not invoked.
+   */
+  double PeekNextOptimalTs() const noexcept
+  {
+    return NextOptimalTs;
+  }
+  bool PeekFeasRes() const noexcept
+  {
+    return m_feas_res;
+  }
+
+  /**
+   * Reset all internal solver state that persists across
+   * GetWalkingParameters() calls (i.e. is only conditionally, not
+   * unconditionally, overwritten each call) back to the same values used
+   * at construction. Must be called once per RL episode boundary, from
+   * Walking_controller::reset() -- this object is a single member of
+   * Walking_controller constructed once for the controller's whole
+   * lifetime and is never reconstructed per-episode, so without this call
+   * it silently inherits state (including a possible NaN in NextOptimalTs/
+   * m_timestamp) from the end of one episode into the start of the next.
+   * Does NOT touch m_feasibilitySolver's own internal state -- that is a
+   * separate, not-yet-investigated persistence risk (see feasibility
+   * solver work, tracked separately).
+   */
+  void ResetEpisodeState();
+
+  /**
    * Returns the computed trajectory, each vector3d in the vector contains the CoM , CoMd and ZMP value for a time step
    */
   const std::vector<Eigen::Vector3d> & X_MPC() const noexcept
