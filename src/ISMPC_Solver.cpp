@@ -60,8 +60,8 @@ void ISMPC_Solver::ResetEpisodeState()
   InStabilityRange = false;
   m_stop = true;
 
-  mc_rtc::log::warning("[ISMPC_Solver] ResetEpisodeState: NextOptimalTs={} m_feas_res={} m_Tds={}", NextOptimalTs,
-                        m_feas_res, m_Tds);
+  // mc_rtc::log::warning("[ISMPC_Solver] ResetEpisodeState: NextOptimalTs={} m_feas_res={} m_Tds={}", NextOptimalTs,
+  //                       m_feas_res, m_Tds);
 }
 
 void ISMPC_Solver::DumpState(const std::string & tag)
@@ -2154,8 +2154,8 @@ bool ISMPC_Solver::GetWalkingParameters(bool stop)
 
   NextOptimalTs = m_timestamp[0];
 
-  mc_rtc::log::warning("[ISMPC {}] m_feas_res={} m_timestamp[0]={} NextOptimalTs={} m_tk={} gate=(NextOptimalTs-m_tk)={}",
-                     m_t_global, m_feas_res, m_timestamp[0], NextOptimalTs, m_tk, NextOptimalTs - m_tk);
+  // mc_rtc::log::warning("[ISMPC {}] m_feas_res={} m_timestamp[0]={} NextOptimalTs={} m_tk={} gate=(NextOptimalTs-m_tk)={}",
+  //                    m_t_global, m_feas_res, m_timestamp[0], NextOptimalTs, m_tk, NextOptimalTs - m_tk);
 
   QPsuccess = false;
   InStabilityRange = false;

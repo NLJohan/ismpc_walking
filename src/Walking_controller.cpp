@@ -1100,9 +1100,9 @@ void Walking_controller::reset(const mc_control::ControllerResetData & reset_dat
   // dumps can be paired up in the log and diffed directly, rather than inferred.
   // Called here, at reset() ENTRY, BEFORE ResetEpisodeState() below runs -- this
   // captures exactly what MPCSolver inherited from the end of the previous episode.
-  MPCSolver.DumpState("reset_enter_prevCount" + std::to_string(count));
-  mpc_state_.DumpState("reset_enter_prevCount" + std::to_string(count) + "_mpcstate");
-  mpc_thread_state.DumpState("reset_enter_prevCount" + std::to_string(count) + "_mpcthreadstate");
+  // MPCSolver.DumpState("reset_enter_prevCount" + std::to_string(count));
+  // mpc_state_.DumpState("reset_enter_prevCount" + std::to_string(count) + "_mpcstate");
+  // mpc_thread_state.DumpState("reset_enter_prevCount" + std::to_string(count) + "_mpcthreadstate");
 
   mc_control::fsm::Controller::reset(reset_data);
 
@@ -1182,7 +1182,7 @@ void Walking_controller::reset(const mc_control::ControllerResetData & reset_dat
   // same log, right next to the pre-reset "inherited" dump above. NOTE: count is
   // already 0 by this point (see count = 0 above) -- this tag intentionally does
   // NOT include prevCount, to avoid implying it's still meaningful here.
-  MPCSolver.DumpState("reset_after_ResetEpisodeState");
+  // MPCSolver.DumpState("reset_after_ResetEpisodeState");
   // Re-apply the fresh p_c_k/p_z_k/p_u/v_c_k set just above, since
   // ClearSolveState() zeroes them along with everything else.
   mpc_state_.p_c_k = robot().com();
