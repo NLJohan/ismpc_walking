@@ -10,9 +10,9 @@ from libcpp cimport bool as cppbool
 cdef extern from "ismpc_walking_bridge.h":
   cppbool ismpc_walking_set_com_height_sine_params(object py_ctl,
                                                      double offset,
-                                                     double amplitude,
                                                      double frequency,
-                                                     double phase) except+
+                                                     double sin_amp,
+                                                     double cos_amp) except+
 
   cppbool ismpc_walking_get_com_height_ref(object py_ctl,
                                             double & value) except+

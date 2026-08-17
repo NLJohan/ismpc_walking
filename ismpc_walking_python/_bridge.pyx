@@ -12,8 +12,8 @@ cimport ismpc_walking_python._c_bridge as c_bridge
 from libcpp cimport bool as cppbool
 
 
-def set_com_height_sine_params(ctl, double offset, double amplitude,
-                                double frequency, double phase):
+def set_com_height_sine_params(ctl, double offset, double frequency,
+                                double sin_amp, double cos_amp):
   """Push RL-set CoM-height sine params into the running ISMPC solver.
 
   `ctl` should be an mc_control.MCController instance. Returns True if it
@@ -23,7 +23,7 @@ def set_com_height_sine_params(ctl, double offset, double amplitude,
   controllers in other tasks).
   """
   cdef cppbool ok = c_bridge.ismpc_walking_set_com_height_sine_params(
-    ctl, offset, amplitude, frequency, phase
+    ctl, offset, frequency, sin_amp, cos_amp
   )
   return ok
 

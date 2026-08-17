@@ -128,10 +128,10 @@ void ISMPC_Solver::DumpState(const std::string & tag)
   mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_lambda={}", tag, m_lambda);
   mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_mass={}", tag, m_mass);
   mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_riccati_dt={}", tag, m_riccati_dt);
-  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_rl_com_z_amplitude={}", tag, m_rl_com_z_amplitude);
   mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_rl_com_z_frequency={}", tag, m_rl_com_z_frequency);
   mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_rl_com_z_offset={}", tag, m_rl_com_z_offset);
-  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_rl_com_z_phase={}", tag, m_rl_com_z_phase);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_rl_com_z_sin_amp={}", tag, m_rl_com_z_sin_amp);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_rl_com_z_cos_amp={}", tag, m_rl_com_z_cos_amp);
   mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_support_state={}", tag, m_support_state);
   mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_t_delay={}", tag, m_t_delay);
   mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_t_global={}", tag, m_t_global);
@@ -578,16 +578,14 @@ void ISMPC_Solver::init_MPC(const MPC_state & mpc_state, std::string Tail, int S
       for(int i = 0; i < m_C; ++i)
       {
         const double t_i = m_t_global + static_cast<double>(i) * m_delta;
-        const double phase = omega * t_i + m_rl_com_z_phase;
+        const double phase = omega * t_i;
         const double sin_phase = std::sin(phase);
         const double cos_phase = std::cos(phase);
 
-        CoM_height[i] = m_rl_com_z_offset + m_rl_com_z_amplitude * sin_phase;
-        // z(t)  = offset + A*sin(w t + phi)
-        // zdot  = A*w*cos(w t + phi)
-        // zddot = -A*w^2*sin(w t + phi)
-        const double zc_dot = m_rl_com_z_amplitude * omega * cos_phase;
-        const double zc_ddot = -m_rl_com_z_amplitude * omega * omega * sin_phase;
+        CoM_height[i] = m_rl_com_z_offset + m_rl_com_z_sin_amp * sin_phase + m_rl_com_z_cos_amp * cos_phase;
+        const double zc_dot = omega * m_rl_com_z_sin_amp * cos_phase - omega * m_rl_com_z_cos_amp * sin_phase;
+        const double zc_ddot = - omega * omega * (CoM_height[i] - m_rl_com_z_offset);
+
         CoM_height_vel[i] = zc_dot;
         CoM_height_acc[i] = zc_ddot;
 

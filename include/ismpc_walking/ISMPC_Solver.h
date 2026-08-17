@@ -257,12 +257,12 @@ public:
    * (offset + amplitude*sin(...)) never goes negative; this setter does not
    * clamp or validate the values it is given.
    */
-  void SetCoMHeightSineParams(double offset, double amplitude, double frequency, double phase) noexcept
+  void SetCoMHeightSineParams(double offset, double frequency, double sin_amp, double cos_amp) noexcept
   {
     m_rl_com_z_offset = offset;
-    m_rl_com_z_amplitude = amplitude;
     m_rl_com_z_frequency = frequency;
-    m_rl_com_z_phase = phase;
+    m_rl_com_z_sin_amp = sin_amp;
+    m_rl_com_z_cos_amp = cos_amp;
   }
 
 
@@ -776,10 +776,11 @@ private:
    */
   bool Slide_ZMP_region = false;
 
+  // CoM_height[i] = m_rl_com_z_offset + m_rl_com_z_sin_amp * sin_phase + m_rl_com_z_cos_amp * cos_phase
   double m_rl_com_z_offset = 0.7;      // RL-set CoM height offset (m)
-  double m_rl_com_z_amplitude = 0.0;   // RL-set sine amplitude (m)
   double m_rl_com_z_frequency = 0.0;   // RL-set sine frequency (Hz)
-  double m_rl_com_z_phase = 0.0;       // RL-set sine phase offset (rad)
+  double m_rl_com_z_sin_amp = 0.0;   // RL-set sine amplitude
+  double m_rl_com_z_cos_amp = 0.0;   // RL-set cosine amplitude
 
   std::vector<double> m_eta; // Prendulum frequency
   std::vector<double> m_eta_free; // Prendulum frequency disturbance free

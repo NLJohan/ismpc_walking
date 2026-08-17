@@ -21,6 +21,14 @@ include(cmake/cython/cython.cmake)
 
 project(${PROJECT_NAME} LANGUAGES CXX VERSION ${PROJECT_VERSION})
 
+if(DEFINED ENV{FS_ASAN})
+  message(STATUS "ismpc_walking: AddressSanitizer ENABLED via FS_ASAN env var")
+  add_compile_options(-fsanitize=address -fno-omit-frame-pointer -g -O1)
+  add_link_options(-fsanitize=address)
+endif()
+
+# Check if the project is built inside mc_rtc
+
 # Check if the project is built inside mc_rtc
 if(NOT TARGET mc_rtc::mc_control)
   add_project_dependency(mc_rtc REQUIRED)

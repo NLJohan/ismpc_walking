@@ -55,20 +55,18 @@ inline mc_control::MCController * ismpc_walking_unwrap_mc_controller(PyObject * 
  *                    MCGlobalController.controller()).
  * @param offset      CoM height the sine rides on (m). Caller-side (mc_mjlab)
  *                    responsibility: already clipped to a safe positive range.
- * @param amplitude   Sine amplitude (m). Caller-side responsibility: already
- *                    derived as amplitude_ratio * offset, so offset - amplitude
- *                    >= 0 always -- this function does not re-check that.
  * @param frequency   Sine frequency (Hz).
- * @param phase       Sine phase offset (rad).
+ * @param sin_amp   Sine amplitude (m).
+ * @param cos_amp   cosine amplitude (m).
  * @return true if py_ctl was actually a Walking_controller and the call
  *         landed, false otherwise (caller should treat false as "nothing
  *         happened", not necessarily an error -- see notes in step_env).
  */
 inline bool ismpc_walking_set_com_height_sine_params(PyObject * py_ctl,
                                                        double offset,
-                                                       double amplitude,
                                                        double frequency,
-                                                       double phase)
+                                                       double sin_amp,
+                                                       double cos_amp)
 {
   auto * ctl = ismpc_walking_unwrap_mc_controller(py_ctl);
   if(ctl == nullptr)
@@ -80,7 +78,7 @@ inline bool ismpc_walking_set_com_height_sine_params(PyObject * py_ctl,
   {
     return false;
   }
-  walking->ismpc_solver().SetCoMHeightSineParams(offset, amplitude, frequency, phase);
+  walking->ismpc_solver().SetCoMHeightSineParams(offset, frequency, sin_amp, cos_amp);
   return true;
 }
 
