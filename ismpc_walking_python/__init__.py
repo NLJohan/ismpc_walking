@@ -1,5 +1,6 @@
 from ._bridge import (
   get_com_height_ref,
+  get_is_walking,
   get_ismpc_wants_stop,
   qp_succeeded,
   set_com_height_sine_params,
@@ -9,6 +10,7 @@ from ._bridge import (
 
 __all__ = [
   "get_com_height_ref",
+  "get_is_walking",
   "get_ismpc_wants_stop",
   "qp_succeeded",
   "set_com_height_sine_params",

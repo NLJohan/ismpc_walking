@@ -219,3 +219,35 @@ inline bool ismpc_walking_get_ismpc_wants_stop(PyObject * py_ctl, bool & value)
   value = walking->ismpcWantsStop();
   return true;
 }
+
+/**
+ * @brief Read back the controller's ACTUAL current walking state
+ * (Robot_Walking) -- ground truth, distinct from both
+ * ismpc_walking_get_ismpc_wants_stop (ISMPC's own advisory opinion) and
+ * whatever the policy last commanded via
+ * ismpc_walking_set_policy_wants_walk (the policy's own intent). Robot_
+ * Walking can legitimately disagree with either: the policy may command
+ * walking before the controller has actually started stepping, or ISMPC
+ * may want to stop while Robot_Walking is still transitioning to a safe
+ * standing state.
+ *
+ * @param py_ctl A Python mc_control.MCController object.
+ * @param value  Out-param, set to true if the robot is actually walking.
+ * @return true if py_ctl was actually a Walking_controller and the call
+ *         landed, false otherwise.
+ */
+inline bool ismpc_walking_get_is_walking(PyObject * py_ctl, bool & value)
+{
+  auto * ctl = ismpc_walking_unwrap_mc_controller(py_ctl);
+  if(ctl == nullptr)
+  {
+    return false;
+  }
+  auto * walking = dynamic_cast<Walking_controller *>(ctl);
+  if(walking == nullptr)
+  {
+    return false;
+  }
+  value = walking->robot_walking();
+  return true;
+}

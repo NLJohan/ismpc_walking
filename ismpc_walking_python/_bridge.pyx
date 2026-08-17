@@ -101,3 +101,21 @@ def get_ismpc_wants_stop(ctl):
   if not ok:
     return None
   return bool(value)
+
+
+def get_is_walking(ctl):
+  """The controller's ACTUAL current walking state (Robot_Walking), or
+  None if unavailable.
+
+  Ground truth, distinct from both get_ismpc_wants_stop() (ISMPC's own
+  advisory opinion) and whatever the policy last commanded via
+  set_policy_wants_walk() (the policy's own intent) -- neither of those
+  alone is safe to reward against, since the policy could report "walking"
+  without the controller actually walking, or vice versa. Robot_Walking is
+  what actually happened.
+  """
+  cdef cppbool value = False
+  cdef cppbool ok = c_bridge.ismpc_walking_get_is_walking(ctl, value)
+  if not ok:
+    return None
+  return bool(value)
