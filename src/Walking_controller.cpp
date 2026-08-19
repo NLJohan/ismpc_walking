@@ -421,17 +421,11 @@ void Walking_controller::ComputeWalkingTrajectory()
     mpc_thread_state.FeasibilityPolygonStandingSwitch = MPCSolver.feasibility_region_switched();
     mpc_thread_state.X_MPC = MPCSolver.X_MPC();
     mpc_thread_state.Y_MPC = MPCSolver.Y_MPC();
-    // Time-Varying Fix: CoM_height and eta_vec must be refreshed in lockstep with X_MPC/Y_MPC,
-    // since Get_CoM_planarTarget(indx) and getEta(indx) index into all three with the same indx.
     mpc_thread_state.CoM_height = MPCSolver.CoM_height_vec();
-    // CoM-height feedforward: same lockstep-refresh requirement as CoM_height
-    // above, consumed by Get_CoMVel_planarTarget's z-component and
-    // Get_CoMHeightAccel_target. May be empty (see those accessors' doc
-    // comments) for signal cases without a closed-form derivative -- both
-    // MPC_state accessors already fall back to 0 in that case.
     mpc_thread_state.CoM_height_vel = MPCSolver.CoM_height_vel_vec();
     mpc_thread_state.CoM_height_acc = MPCSolver.CoM_height_acc_vec();
     mpc_thread_state.eta_vec = MPCSolver.eta_vec();
+    mpc_thread_state.com_height_substep_ratio = static_cast<size_t>(MPCSolver.delta_mpc() / MPCSolver.delta_control());
     mpc_thread_state.Index = 1 + static_cast<int>(mpc_thread_process_time * 1e-3 / controller_timestep);
     mpc_thread_state.SupPolygon = MPCSolver.get_polynome_support();
     mpc_thread_state.Traj_ant = MPCSolver.GetAfterTc_ZMP_trajectory();
@@ -528,7 +522,7 @@ void Walking_controller::UpdatePlanner_input()
                        robot().surfacePose(swingFootName).translation());
 
   mpc_state_.X_0_SwingFoot = X_0_swing;
-  Robot_Walking = !(Stop && doubleSupport_state);
+  // Robot_Walking = !(Stop && doubleSupport_state); // This is so that the policy cannot start on tick 0
   mpc_state_.stop = !Robot_Walking;
   if(debugMode)
   {
@@ -661,6 +655,11 @@ bool Walking_controller::run()
       NewThreadState = false;
       updateAdmittance = true;
     }
+    std::cerr << "[RUN_DEBUG] X_MPC.size()=" << mpc_state_.X_MPC.size()
+          << " Y_MPC.size()=" << mpc_state_.Y_MPC.size()
+          << " Index=" << mpc_state_.Index
+          << " QPSuccess=" << mpc_state_.QPSuccess
+          << std::endl;
     MoveCoM();
     UpdateInitialVectors();
     UpdatePlanner_input();
@@ -673,13 +672,12 @@ bool Walking_controller::run()
   // header for the full design rationale.
   if(!(Stop && doubleSupport_state))
   {
-    Robot_Walking = true;
+    Robot_Walking = (mpc_state_.X_MPC.size() > 0); // this is so that the policy doenst make the robot walk on first post-reset tick (otherwise error_and_throw)
     if(t - t_k > controller_config_.delta || (doubleSupport_state && IncreaseUpdate))
     {
       t_k += (doubleSupport_state && IncreaseUpdate) ? controller_timestep : controller_config_.delta;
       compute_trajectory_once.notify_all();
     }
-
     MoveFeet(t);
   }
   else
@@ -713,6 +711,7 @@ bool Walking_controller::run()
 
     Robot_Walking = false;
   }
+
 
   auto configureStabilizer = [&](StabilizerState targetState,
                                  const mc_rbdyn::lipm_stabilizer::StabilizerConfiguration & configBase, double lambda,
@@ -762,7 +761,6 @@ bool Walking_controller::run()
   controller_config_.stab_config = stabTask->config();
 
   count += 1;
-
   return mc_control::fsm::Controller::run();
 }
 
@@ -946,6 +944,14 @@ void Walking_controller::MoveCoM()
     m_x0_support_z_logged_ = X_0_support.translation().z();
   }
 
+  p_com_logged_ = p_com;
+  Vc_logged_ = Vc;
+  acc_com_logged_ = acc_com;
+
+  logger().addLogEntry("comTask_target_pos", [this]() -> const Eigen::Vector3d & { return p_com_logged_; });
+  logger().addLogEntry("comTask_target_vel", [this]() -> const Eigen::Vector3d & { return Vc_logged_; });
+  logger().addLogEntry("comTask_target_acc", [this]() -> const Eigen::Vector3d & { return acc_com_logged_; });
+  
   comTask->com(p_com);
   comTask->refVel(Vc);
   comTask->refAccel(acc_com);

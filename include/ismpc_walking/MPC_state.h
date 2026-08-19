@@ -10,11 +10,22 @@ struct MPC_state
   {
     if(indx < X_MPC.size())
     {
-      // Time-Varying Fix: z used to be hardcoded to 0 here, silently discarding any
-      // time-varying CoM height trajectory computed by the solver. CoM_height must be
-      // populated (same indexing/size as X_MPC/Y_MPC) by the controller from
-      // ISMPC_Solver::CoM_height_vec() every time X_MPC/Y_MPC are refreshed.
-      const double z = (indx < CoM_height.size()) ? CoM_height[indx] : default_CoM_height;
+      // Time-Varying Fix, corrected: X_MPC is built by ISMPC_Solver::Integrate() at
+      // m_delta_control resolution (index 0 = initial state pushed before the main loop;
+      // indices 1..N_variable are N = m_delta/m_delta_control sub-steps per outer MPC
+      // step). CoM_height is populated once per OUTER step (m_delta resolution, m_C
+      // samples) -- so X_MPC[indx] and CoM_height[indx] are NOT the same time instant
+      // for indx > 0, contrary to what this function previously assumed (either via a
+      // direct indx read, which silently read 10 outer-steps-too-far ahead for large
+      // indx, or a hardcoded CoM_height[0], which was correct only at indx==0 and wrong
+      // -- flat/frozen -- everywhere else). The correct outer-step index for a given
+      // X_MPC index is (indx == 0) ? 0 : (indx - 1) / com_height_substep_ratio, integer
+      // division, accounting for the single extra initial-state entry Integrate() pushes
+      // before its per-step sub-stepping loop begins. com_height_substep_ratio must be
+      // set by the controller (from ISMPC_Solver's m_delta/m_delta_control) every time
+      // X_MPC/CoM_height are refreshed together -- see its declaration below.
+      const size_t height_idx = (indx == 0) ? 0 : (indx - 1) / std::max<size_t>(com_height_substep_ratio, 1);
+      const double z = (height_idx < CoM_height.size()) ? CoM_height[height_idx] : default_CoM_height;
       return Eigen::Vector3d{X_MPC[indx][0], Y_MPC[indx][0], z};
     }
     std::cout << "[CoM access] Warning wrong index returning 0 vector" << std::endl;
@@ -25,15 +36,13 @@ struct MPC_state
   {
     if(indx < X_MPC.size())
     {
-      // Time-Varying Fix (CoM-height feedforward): z used to be hardcoded to 0
-      // here, discarding the solver's analytic zc_dot feedforward the same way
-      // Get_CoM_planarTarget's z was hardcoded before the earlier Time-Varying
-      // Fix. CoM_height_vel must be populated (same indexing/size as X_MPC/
-      // Y_MPC/CoM_height) by the controller from ISMPC_Solver::CoM_height_vel_vec()
-      // every time X_MPC/Y_MPC are refreshed -- see that accessor's own doc
-      // comment for which signal cases actually populate it (empty otherwise,
-      // hence the fallback to 0 here rather than an out-of-range read).
-      const double zdot = (indx < CoM_height_vel.size()) ? CoM_height_vel[indx] : 0.0;
+      // Time-Varying Fix (CoM-height feedforward), corrected: same outer/inner-step
+      // index mismatch as Get_CoM_planarTarget above -- see that function's comment
+      // for the full explanation. CoM_height_vel is populated at the same m_delta-
+      // resolution, m_C-sample cadence as CoM_height, not at X_MPC's finer
+      // m_delta_control resolution.
+      const size_t height_idx = (indx == 0) ? 0 : (indx - 1) / std::max<size_t>(com_height_substep_ratio, 1);
+      const double zdot = (height_idx < CoM_height_vel.size()) ? CoM_height_vel[height_idx] : 0.0;
       return Eigen::Vector3d{X_MPC[indx][1], Y_MPC[indx][1], zdot};
     }
     std::cout << "[CoMd access] Warning wrong index returning 0 vector" << std::endl;
@@ -50,12 +59,21 @@ struct MPC_state
    * callers wanting a feedforward acceleration term should read this
    * directly into the z-component of their own acc_com vector, not treat
    * the return value as a drop-in replacement for a planar acceleration.
+   *
+   * indx here is expected to be an X_MPC-style index (same outer/inner-step
+   * mapping as Get_CoM_planarTarget/Get_CoMVel_planarTarget above), NOT a
+   * direct CoM_height_acc index -- corrected from the previous version, which
+   * bounds-checked against CoM_height_acc.size() (m_C, e.g. 30) but was being
+   * called with X_MPC-scale indices (e.g. up to 300) by at least one caller,
+   * meaning most calls silently passed the bounds check's intent while still
+   * only ever returning CoM_height_acc[0].
    */
   double Get_CoMHeightAccel_target(const size_t indx)
   {
-    if(indx < CoM_height_acc.size())
+    const size_t height_idx = (indx == 0) ? 0 : (indx - 1) / std::max<size_t>(com_height_substep_ratio, 1);
+    if(height_idx < CoM_height_acc.size())
     {
-      return CoM_height_acc[indx];
+      return CoM_height_acc[height_idx];
     }
     return 0.0;
   }
@@ -221,6 +239,14 @@ struct MPC_state
   // Get_CoMVel_planarTarget's z-component and Get_CoMHeightAccel_target.
   std::vector<double> CoM_height_vel;
   std::vector<double> CoM_height_acc;
+  // Ratio of X_MPC/Y_MPC's sub-step resolution to CoM_height/CoM_height_vel/CoM_height_acc's
+  // outer-step resolution -- i.e. how many X_MPC sub-samples correspond to one CoM_height
+  // sample. Must be set by the controller (from ISMPC_Solver's m_delta/m_delta_control,
+  // typically (int)(m_delta/m_delta_control)) every time X_MPC/CoM_height are refreshed
+  // together. Defaults to 1 (no assumed ratio) so an unset value degrades to treating every
+  // X_MPC index as its own CoM_height sample, rather than silently dividing by an unset/zero
+  // value.
+  size_t com_height_substep_ratio = 1;
   // Time-Varying Fix: per-horizon-step pendulum frequency, same indexing/size as X_MPC/Y_MPC.
   // Must be populated from ISMPC_Solver::eta_vec() every time X_MPC/Y_MPC are refreshed.
   std::vector<double> eta_vec;

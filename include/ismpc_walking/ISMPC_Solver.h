@@ -808,7 +808,7 @@ private:
   std::vector<double> m_K_kernel; // K(t0,t) = beta(t) * exp(-B(t0,t))
   std::vector<double> m_G_kernel; // Closed-loop kernel G(t0,s), backward recursion, tail-seeded
   std::vector<double> m_S_cum; // S(t0,s) = integral_s^inf G(t0,tau) dtau, backward cumulative, tail-seeded
-  double m_com_z_amplitude = 0.15; // Amplitude of the CoM height oscillation (metres)
+  double m_com_z_amplitude = 0.10; // Amplitude of the CoM height oscillation (metres)
   double m_com_z_test_t0 = 15.0;      // Step-test trigger time (s), wall-clock, replaces old hardcoded 15.0
   double m_com_z_test_period = 1.0;   // Sine-test period (s), wall-clock
   // Elapsed time since the start of the current step cycle, used to compute

@@ -541,6 +541,9 @@ private:
   double z = 30; // Coordinate for a specified footstep position
 
   Eigen::Vector3d p_com_logged_ = Eigen::Vector3d::Zero();
+  Eigen::Vector3d Vc_logged_ = Eigen::Vector3d::Zero();
+  Eigen::Vector3d acc_com_logged_ = Eigen::Vector3d::Zero();
+  int index_logged_ = 0;
   double m_com_height_raw_h0_logged_ = 0.0;
   double m_com_height_raw_hidx_logged_ = 0.0;
   int m_mpc_index_logged_ = 0;

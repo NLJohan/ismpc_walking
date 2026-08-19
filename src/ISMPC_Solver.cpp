@@ -2380,6 +2380,11 @@ bool ISMPC_Solver::GetWalkingParameters(bool stop)
   Eigen::VectorXd zmp_u = QP_Output.head(2 * m_C);
   if(!(((zmp_u - zmp_u).array() == (zmp_u - zmp_u).array()).all()))
   {
+    mc_rtc::log::warning(
+    "[ISMPC_NAN_DEBUG] N_variable={} j_Max_C={} m_C={} Aineq.rows()={} Aineq.cols()={} "
+    "Aeq.rows()={} Aeq.cols()={} m_Q.rows()={} m_Q.cols()={} QP_Output.size()={}",
+    N_variable, j_Max_C, m_C, Aineq.rows(), Aineq.cols(),
+    Aeq.rows(), Aeq.cols(), m_Q.rows(), m_Q.cols(), QP_Output.size());
     mc_rtc::log::warning("[ISMPC] nan detected in solver output");
     QPsuccess = false;
     return true;
