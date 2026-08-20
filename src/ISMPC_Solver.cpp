@@ -475,46 +475,70 @@ void ISMPC_Solver::init_MPC(const MPC_state & mpc_state, std::string Tail, int S
   {
     case CoMHeightTestSignal::PerStepCosine:
     {
-      const double four_pi_sq = 4.0 * M_PI * M_PI; // precomputed constant
-      double t_start_j = -m_tk_within_step; // t_start_j relative to now for step j=0
-      size_t j = 0; // index into m_timestamp
+        const double four_pi_sq = 4.0 * M_PI * M_PI;
 
-      for(int i = 0; i < m_C; ++i)
-      {
-        const double t_i = static_cast<double>(i) * m_delta; // time of sample i relative to now
-
-        // Advance step index if sample i has crossed into the next step
-        while(j + 1 < m_timestamp.size() && t_i >= m_timestamp[j] - m_tk)
+        // Local helper: given absolute-ish time-relative-to-now t_i, walk step index j (starting
+        // fresh each call, since fine-loop sample count differs from coarse) to find which step
+        // contains t_i, and return {height, zc_ddot} at that instant. Re-deriving j from scratch
+        // per sample (rather than incrementally across the whole loop, as the original coarse-only
+        // version did) is a deliberate correctness-over-micro-efficiency choice: the fine loop has
+        // n_fine (up to ~301) samples, and re-walking m_timestamp (size m_C, ~30) per sample is
+        // cheap relative to everything else this function does.
+        auto eval_at = [&](double t_i) -> std::pair<double, double>
         {
-          t_start_j = m_timestamp[j] - m_tk; // new step starts here relative to now
-          ++j;
+            double t_start_j = -m_tk_within_step;
+            size_t j = 0;
+            double t_end_j = (j < m_timestamp.size()) ? (m_timestamp[j] - m_tk) : (m_timestamp.back() - m_tk + m_Tds);
+            while(j + 1 < m_timestamp.size() && t_i >= m_timestamp[j] - m_tk)
+            {
+                t_start_j = m_timestamp[j] - m_tk;
+                ++j;
+                t_end_j = (j < m_timestamp.size()) ? (m_timestamp[j] - m_tk) : (m_timestamp.back() - m_tk + m_Tds);
+            }
+            const double T_j = t_end_j - t_start_j;
+            const double T_j_safe = (T_j > 1e-6) ? T_j : 1e-6;
+            const double phi = std::clamp((t_i - t_start_j) / T_j_safe, 0.0, 1.0);
+            const double cos_phi = std::cos(2.0 * M_PI * phi);
+            const double height = CoM_height_avg - m_com_z_amplitude * cos_phi;
+            const double zc_ddot = m_com_z_amplitude * (four_pi_sq / (T_j_safe * T_j_safe)) * cos_phi;
+            return {height, zc_ddot};
+        };
+
+        // UNCHANGED coarse loop, now calling eval_at() instead of inlining the walk --
+        // functionally identical to the original for each i, since the original also
+        // re-derives j/t_start_j incrementally starting from j=0 at the top of the
+        // switch-case (this is called once per init_MPC(), so j always starts at 0
+        // here regardless of restructuring).
+        for(int i = 0; i < m_C; ++i)
+        {
+            const double t_i = static_cast<double>(i) * m_delta;
+            const auto [height, zc_ddot] = eval_at(t_i);
+            CoM_height[i] = height;
+            m_eta[i] = std::sqrt((zc_ddot + g) / CoM_height[i]);
+            m_eta_free[i] = m_eta[i];
         }
 
-        // Duration of the step that contains sample i
-        const double t_end_j = (j < m_timestamp.size()) ? (m_timestamp[j] - m_tk) : (m_timestamp.back() - m_tk + m_Tds);
-        const double T_j = t_end_j - t_start_j;
-        const double T_j_safe = (T_j > 1e-6) ? T_j : 1e-6; // guard against zero-duration edge case
-
-        // Phase in [0, 1] within step j
-        const double phi = std::clamp((t_i - t_start_j) / T_j_safe, 0.0, 1.0);
-
-        // Cosine profile: minimum height (crouch) at phi=0 (step start / double support),
-        // maximum height at phi=0.5 (mid single support). Same cosine evaluation gives both
-        // z_c and z_ddot analytically -- no extra trig call.
-        const double cos_phi = std::cos(2.0 * M_PI * phi);
-
-        CoM_height[i] = CoM_height_avg - m_com_z_amplitude * cos_phi;
-
-        // z_ddot = A * (4*pi^2 / T^2) * cos(2*pi*phi)
-        // Derivation: z(phi) = z_nom - A*cos(2*pi*phi), phi = t/T (constant within step)
-        // dz/dt = A * 2*pi/T * sin(2*pi*phi)
-        // d2z/dt2 = A * (2*pi/T)^2 * cos(2*pi*phi)
-        const double zc_ddot = m_com_z_amplitude * (four_pi_sq / (T_j_safe * T_j_safe)) * cos_phi;
-
-        m_eta[i] = std::sqrt((zc_ddot + g) / CoM_height[i]);
-        m_eta_free[i] = m_eta[i];
-      }
-      break;
+        // NEW: fine-resolution reference for task-target accessors only.
+        {
+            const int N_fine = static_cast<int>(m_delta / m_delta_control);
+            const size_t n_fine = static_cast<size_t>(m_C) * static_cast<size_t>(N_fine) + 1;
+            CoM_height_fine.resize(n_fine);
+            CoM_height_vel_fine.resize(n_fine);
+            CoM_height_acc_fine.resize(n_fine);
+            for(size_t idx = 0; idx < n_fine; ++idx)
+            {
+                const double t_i = static_cast<double>(idx) * m_delta_control;
+                const auto [height, zc_ddot] = eval_at(t_i);
+                CoM_height_fine[idx] = height;
+                CoM_height_acc_fine[idx] = zc_ddot;
+                // No closed-form zc_dot in the original PerStepCosine case (it was never
+                // computed there, only zc_ddot) -- leaving CoM_height_vel_fine unpopulated
+                // (zero, from resize()'s default) for this case, matching the original's
+                // scope. Flag if per-step velocity feedforward is ever wanted here.
+                CoM_height_vel_fine[idx] = 0.0;
+            }
+        }
+        break;
     }
 
     case CoMHeightTestSignal::Step:
@@ -540,59 +564,106 @@ void ISMPC_Solver::init_MPC(const MPC_state & mpc_state, std::string Tail, int S
 
     case CoMHeightTestSignal::Sine:
     {
-      // Wall-clock sinusoid, decoupled from footstep phase (unlike PerStepCosine above), so the
-      // reference is a clean, uninterrupted sine usable for identification regardless of step
-      // timing/duration. z_c(t) = CoM_height_avg + A*sin(omega_test*t), with the analytically
-      // exact z_ddot fed forward (unlike the Step case above, here a smooth feedforward IS
-      // physically meaningful and should be supplied, since the reference itself is smooth).
-      const double omega_test = 2.0 * M_PI / std::max(m_com_z_test_period, 1e-6);
-      CoM_height_vel.resize(static_cast<size_t>(m_C));
-      CoM_height_acc.resize(static_cast<size_t>(m_C));
-      for(int i = 0; i < m_C; ++i)
-      {
-        const double t_i = m_t_global + static_cast<double>(i) * m_delta; // absolute time of sample i
-        const double phase = omega_test * t_i;
-        const double sin_phase = std::sin(phase);
-        const double cos_phase = std::cos(phase);
+        // Wall-clock sinusoid, decoupled from footstep phase (unlike PerStepCosine below), so the
+        // reference is a clean, uninterrupted sine usable for identification regardless of step
+        // timing/duration. z_c(t) = CoM_height_avg + A*sin(omega_test*t), with the analytically
+        // exact z_ddot fed forward.
+        const double omega_test = 2.0 * M_PI / std::max(m_com_z_test_period, 1e-6);
+        CoM_height_vel.resize(static_cast<size_t>(m_C));
+        CoM_height_acc.resize(static_cast<size_t>(m_C));
+        for(int i = 0; i < m_C; ++i)
+        {
+            // UNCHANGED: coarse CoM_height, feeds m_eta/m_eta_free/Integrate().
+            const double t_i = m_t_global + static_cast<double>(i) * m_delta;
+            const double phase = omega_test * t_i;
+            const double sin_phase = std::sin(phase);
+            const double cos_phase = std::cos(phase);
 
-        CoM_height[i] = CoM_height_avg + m_com_z_amplitude * sin_phase;
-        const double zc_dot = m_com_z_amplitude * omega_test * cos_phase;
-        const double zc_ddot = -m_com_z_amplitude * omega_test * omega_test * sin_phase;
-        CoM_height_vel[i] = zc_dot;
-        CoM_height_acc[i] = zc_ddot;
+            CoM_height[i] = CoM_height_avg + m_com_z_amplitude * sin_phase;
+            const double zc_dot = m_com_z_amplitude * omega_test * cos_phase;
+            const double zc_ddot = -m_com_z_amplitude * omega_test * omega_test * sin_phase;
+            CoM_height_vel[i] = zc_dot;
+            CoM_height_acc[i] = zc_ddot;
 
-        m_eta[i] = std::sqrt((zc_ddot + g) / CoM_height[i]);
-        m_eta_free[i] = m_eta[i];
-      }
-      break;
+            m_eta[i] = std::sqrt((zc_ddot + g) / CoM_height[i]);
+            m_eta_free[i] = m_eta[i];
+        }
+
+        // NEW: fine-resolution reference for task-target accessors only. See RlSine
+        // case above for the full rationale; identical pattern, this case's formula.
+        {
+            const int N_fine = static_cast<int>(m_delta / m_delta_control);
+            const size_t n_fine = static_cast<size_t>(m_C) * static_cast<size_t>(N_fine) + 1;
+            CoM_height_fine.resize(n_fine);
+            CoM_height_vel_fine.resize(n_fine);
+            CoM_height_acc_fine.resize(n_fine);
+            for(size_t idx = 0; idx < n_fine; ++idx)
+            {
+                const double t_i = m_t_global + static_cast<double>(idx) * m_delta_control;
+                const double phase = omega_test * t_i;
+                const double sin_phase = std::sin(phase);
+                const double cos_phase = std::cos(phase);
+
+                CoM_height_fine[idx] = CoM_height_avg + m_com_z_amplitude * sin_phase;
+                CoM_height_vel_fine[idx] = m_com_z_amplitude * omega_test * cos_phase;
+                CoM_height_acc_fine[idx] = -m_com_z_amplitude * omega_test * omega_test * sin_phase;
+            }
+        }
+        break;
     }
 
     case CoMHeightTestSignal::RlSine:
     {
-      // RL-driven sine, mirrors the Sine case above but reads the reference
-      // from SetCoMHeightSineParams() instead of the fixed test constants.
-      // The caller (mc_mjlab) is responsible for offset - amplitude >= 0.
-      const double omega = 2.0 * M_PI * m_rl_com_z_frequency;
-      CoM_height_vel.resize(static_cast<size_t>(m_C));
-      CoM_height_acc.resize(static_cast<size_t>(m_C));
-      for(int i = 0; i < m_C; ++i)
-      {
-        const double t_i = m_t_global + static_cast<double>(i) * m_delta;
-        const double phase = omega * t_i;
-        const double sin_phase = std::sin(phase);
-        const double cos_phase = std::cos(phase);
+        // RL-driven sine, mirrors the Sine case above but reads the reference
+        // from SetCoMHeightSineParams() instead of the fixed test constants.
+        // The caller (mc_mjlab) is responsible for offset - amplitude >= 0.
+        const double omega = 2.0 * M_PI * m_rl_com_z_frequency;
+        CoM_height_vel.resize(static_cast<size_t>(m_C));
+        CoM_height_acc.resize(static_cast<size_t>(m_C));
+        for(int i = 0; i < m_C; ++i)
+        {
+            // UNCHANGED: coarse CoM_height, feeds m_eta/m_eta_free/Integrate() exactly
+            // as before this change. Do not modify this loop's resolution or contents.
+            const double t_i = m_t_global + static_cast<double>(i) * m_delta;
+            const double phase = omega * t_i;
+            const double sin_phase = std::sin(phase);
+            const double cos_phase = std::cos(phase);
 
-        CoM_height[i] = m_rl_com_z_offset + m_rl_com_z_sin_amp * sin_phase + m_rl_com_z_cos_amp * cos_phase;
-        const double zc_dot = omega * m_rl_com_z_sin_amp * cos_phase - omega * m_rl_com_z_cos_amp * sin_phase;
-        const double zc_ddot = - omega * omega * (CoM_height[i] - m_rl_com_z_offset);
+            CoM_height[i] = m_rl_com_z_offset + m_rl_com_z_sin_amp * sin_phase + m_rl_com_z_cos_amp * cos_phase;
+            const double zc_dot = omega * m_rl_com_z_sin_amp * cos_phase - omega * m_rl_com_z_cos_amp * sin_phase;
+            const double zc_ddot = - omega * omega * (CoM_height[i] - m_rl_com_z_offset);
 
-        CoM_height_vel[i] = zc_dot;
-        CoM_height_acc[i] = zc_ddot;
+            CoM_height_vel[i] = zc_dot;
+            CoM_height_acc[i] = zc_ddot;
 
-        m_eta[i] = std::sqrt((zc_ddot + g) / CoM_height[i]);
-        m_eta_free[i] = m_eta[i];
-      }
-      break;
+            m_eta[i] = std::sqrt((zc_ddot + g) / CoM_height[i]);
+            m_eta_free[i] = m_eta[i];
+        }
+
+        // NEW: fine-resolution (X_MPC-matching) reference, for MPC_state's task-
+        // target accessors only. Same closed-form sine as above, sampled at
+        // m_delta_control instead of m_delta. Does NOT feed m_eta, Integrate(),
+        // or Compute_Riccati_Kernel() -- those exclusively use CoM_height (coarse,
+        // above), untouched by this block.
+        {
+            const int N_fine = static_cast<int>(m_delta / m_delta_control);
+            const size_t n_fine = static_cast<size_t>(m_C) * static_cast<size_t>(N_fine) + 1;
+            CoM_height_fine.resize(n_fine);
+            CoM_height_vel_fine.resize(n_fine);
+            CoM_height_acc_fine.resize(n_fine);
+            for(size_t idx = 0; idx < n_fine; ++idx)
+            {
+                const double t_i = m_t_global + static_cast<double>(idx) * m_delta_control;
+                const double phase = omega * t_i;
+                const double sin_phase = std::sin(phase);
+                const double cos_phase = std::cos(phase);
+
+                CoM_height_fine[idx] = m_rl_com_z_offset + m_rl_com_z_sin_amp * sin_phase + m_rl_com_z_cos_amp * cos_phase;
+                CoM_height_vel_fine[idx] = omega * m_rl_com_z_sin_amp * cos_phase - omega * m_rl_com_z_cos_amp * sin_phase;
+                CoM_height_acc_fine[idx] = - omega * omega * (CoM_height_fine[idx] - m_rl_com_z_offset);
+            }
+        }
+        break;
     }
   }
 

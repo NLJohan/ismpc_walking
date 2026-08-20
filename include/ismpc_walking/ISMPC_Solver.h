@@ -354,6 +354,10 @@ public:
     return CoM_height_acc;
   }
 
+  const std::vector<double> & CoM_height_fine_vec() const noexcept { return CoM_height_fine; }
+  const std::vector<double> & CoM_height_vel_fine_vec() const noexcept { return CoM_height_vel_fine; }
+  const std::vector<double> & CoM_height_acc_fine_vec() const noexcept { return CoM_height_acc_fine; }
+
   /**
    * Returns the initial DCM used in the MPC in the world frame
    */
@@ -796,7 +800,17 @@ private:
   // so that situation does not currently arise in practice.
   std::vector<double> CoM_height_vel;
   std::vector<double> CoM_height_acc;
-  double CoM_height_avg = 0.75;
+  // Fine-resolution (X_MPC/Y_MPC-matching, m_delta_control-spaced) CoM-height
+  // reference, for smooth task-target consumption via MPC_state's accessors
+  // (Get_CoM_planarTarget/Get_CoMVel_planarTarget/Get_CoMHeightAccel_target).
+  // Populated ADDITIONALLY to (not instead of) the coarse CoM_height/vel/acc
+  // above -- CoM_height (coarse) still exclusively feeds m_eta/Integrate()/
+  // Compute_Riccati_Kernel(), completely unchanged by this addition. Do not
+  // read these _fine members from Integrate() or anything feeding m_eta.
+  std::vector<double> CoM_height_fine;
+  std::vector<double> CoM_height_vel_fine;
+  std::vector<double> CoM_height_acc_fine;
+  double CoM_height_avg = 0.80;
 
   // --- Variable-height Riccati stability kernel (Compute_Riccati_Kernel / Compute_Hk_And_bfree) ---
   // All sized N_fine+1 with N_fine = m_C * m_riccati_substeps; index N_fine is the tail node at t0+Tc.
@@ -866,8 +880,8 @@ private:
   double m_Beta_dcm_stop = 1000;
   double m_Beta_dcm_vel = 0;
   double m_Beta_dcm_vel_stop = 1000;
-  double m_lambda = 20;
-  double m_delay = 0; // delay ( < m_delta ) during which zmp is under previous input Uk
+  double m_lambda = 25;
+  double m_delay = 0.02; // delay ( < m_delta ) during which zmp is under previous input Uk
   double m_delay_elapsed = 0; // Between 0 and m_delay represent the remaining time the delay must be applied
   double m_t_delay = 0; // represent when the delay has been applied
   double m_t_lift = 0; // time when the foot contact has been released

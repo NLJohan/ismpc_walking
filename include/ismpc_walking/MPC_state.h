@@ -10,22 +10,7 @@ struct MPC_state
   {
     if(indx < X_MPC.size())
     {
-      // Time-Varying Fix, corrected: X_MPC is built by ISMPC_Solver::Integrate() at
-      // m_delta_control resolution (index 0 = initial state pushed before the main loop;
-      // indices 1..N_variable are N = m_delta/m_delta_control sub-steps per outer MPC
-      // step). CoM_height is populated once per OUTER step (m_delta resolution, m_C
-      // samples) -- so X_MPC[indx] and CoM_height[indx] are NOT the same time instant
-      // for indx > 0, contrary to what this function previously assumed (either via a
-      // direct indx read, which silently read 10 outer-steps-too-far ahead for large
-      // indx, or a hardcoded CoM_height[0], which was correct only at indx==0 and wrong
-      // -- flat/frozen -- everywhere else). The correct outer-step index for a given
-      // X_MPC index is (indx == 0) ? 0 : (indx - 1) / com_height_substep_ratio, integer
-      // division, accounting for the single extra initial-state entry Integrate() pushes
-      // before its per-step sub-stepping loop begins. com_height_substep_ratio must be
-      // set by the controller (from ISMPC_Solver's m_delta/m_delta_control) every time
-      // X_MPC/CoM_height are refreshed together -- see its declaration below.
-      const size_t height_idx = (indx == 0) ? 0 : (indx - 1) / std::max<size_t>(com_height_substep_ratio, 1);
-      const double z = (height_idx < CoM_height.size()) ? CoM_height[height_idx] : default_CoM_height;
+      const double z = (indx < CoM_height_fine.size()) ? CoM_height_fine[indx] : default_CoM_height;
       return Eigen::Vector3d{X_MPC[indx][0], Y_MPC[indx][0], z};
     }
     std::cout << "[CoM access] Warning wrong index returning 0 vector" << std::endl;
@@ -36,44 +21,18 @@ struct MPC_state
   {
     if(indx < X_MPC.size())
     {
-      // Time-Varying Fix (CoM-height feedforward), corrected: same outer/inner-step
-      // index mismatch as Get_CoM_planarTarget above -- see that function's comment
-      // for the full explanation. CoM_height_vel is populated at the same m_delta-
-      // resolution, m_C-sample cadence as CoM_height, not at X_MPC's finer
-      // m_delta_control resolution.
-      const size_t height_idx = (indx == 0) ? 0 : (indx - 1) / std::max<size_t>(com_height_substep_ratio, 1);
-      const double zdot = (height_idx < CoM_height_vel.size()) ? CoM_height_vel[height_idx] : 0.0;
+      const double zdot = (indx < CoM_height_vel_fine.size()) ? CoM_height_vel_fine[indx] : 0.0;
       return Eigen::Vector3d{X_MPC[indx][1], Y_MPC[indx][1], zdot};
     }
     std::cout << "[CoMd access] Warning wrong index returning 0 vector" << std::endl;
     return Eigen::Vector3d::Zero();
   }
 
-  /**
-   * Analogous to Get_CoMVel_planarTarget, but for the analytic CoM-height
-   * ACCELERATION feedforward (CoM_height_acc, from
-   * ISMPC_Solver::CoM_height_acc_vec()). Only the z-component is meaningful
-   * here (unlike Get_CoM_planarTarget/Get_CoMVel_planarTarget, there is no
-   * existing planar-XY acceleration signal in X_MPC/Y_MPC to pair it with,
-   * so this returns z alone rather than a padded/misleading Vector3d) --
-   * callers wanting a feedforward acceleration term should read this
-   * directly into the z-component of their own acc_com vector, not treat
-   * the return value as a drop-in replacement for a planar acceleration.
-   *
-   * indx here is expected to be an X_MPC-style index (same outer/inner-step
-   * mapping as Get_CoM_planarTarget/Get_CoMVel_planarTarget above), NOT a
-   * direct CoM_height_acc index -- corrected from the previous version, which
-   * bounds-checked against CoM_height_acc.size() (m_C, e.g. 30) but was being
-   * called with X_MPC-scale indices (e.g. up to 300) by at least one caller,
-   * meaning most calls silently passed the bounds check's intent while still
-   * only ever returning CoM_height_acc[0].
-   */
   double Get_CoMHeightAccel_target(const size_t indx)
   {
-    const size_t height_idx = (indx == 0) ? 0 : (indx - 1) / std::max<size_t>(com_height_substep_ratio, 1);
-    if(height_idx < CoM_height_acc.size())
+    if(indx < CoM_height_acc_fine.size())
     {
-      return CoM_height_acc[height_idx];
+      return CoM_height_acc_fine[indx];
     }
     return 0.0;
   }
@@ -239,16 +198,22 @@ struct MPC_state
   // Get_CoMVel_planarTarget's z-component and Get_CoMHeightAccel_target.
   std::vector<double> CoM_height_vel;
   std::vector<double> CoM_height_acc;
-  // Ratio of X_MPC/Y_MPC's sub-step resolution to CoM_height/CoM_height_vel/CoM_height_acc's
-  // outer-step resolution -- i.e. how many X_MPC sub-samples correspond to one CoM_height
-  // sample. Must be set by the controller (from ISMPC_Solver's m_delta/m_delta_control,
-  // typically (int)(m_delta/m_delta_control)) every time X_MPC/CoM_height are refreshed
-  // together. Defaults to 1 (no assumed ratio) so an unset value degrades to treating every
-  // X_MPC index as its own CoM_height sample, rather than silently dividing by an unset/zero
-  // value.
-  size_t com_height_substep_ratio = 1;
-  // Time-Varying Fix: per-horizon-step pendulum frequency, same indexing/size as X_MPC/Y_MPC.
-  // Must be populated from ISMPC_Solver::eta_vec() every time X_MPC/Y_MPC are refreshed.
+  // Fine-resolution (X_MPC/Y_MPC-matching, m_delta_control-spaced) CoM-height
+  // reference, for smooth task-target consumption via Get_CoM_planarTarget/
+  // Get_CoMVel_planarTarget/Get_CoMHeightAccel_target below. Populated
+  // ADDITIONALLY to (not instead of) CoM_height/CoM_height_vel/CoM_height_acc
+  // above -- those coarse arrays are unrelated to this change and continue to
+  // exclusively feed ISMPC_Solver's m_eta/Integrate()/Compute_Riccati_Kernel(),
+  // completely untouched by the fine-resolution addition. Must be populated
+  // from ISMPC_Solver::CoM_height_fine_vec()/CoM_height_vel_fine_vec()/
+  // CoM_height_acc_fine_vec() every time X_MPC/Y_MPC are refreshed -- same
+  // indexing/size as X_MPC/Y_MPC directly (no ratio/mapping needed, unlike the
+  // coarse arrays' previous com_height_substep_ratio-based mapping, now
+  // retired since it's no longer needed).
+  std::vector<double> CoM_height_fine;
+  std::vector<double> CoM_height_vel_fine;
+  std::vector<double> CoM_height_acc_fine;
+  // Time-Varying Fix: per-horizon-step pendulum frequency, same indexing/size as X_MPC/Y_MPC.  
   std::vector<double> eta_vec;
   std::vector<Eigen::Vector3d> SupPolygon;
   std::vector<Eigen::Vector3d> FeasibilityPolygon;
@@ -426,6 +391,9 @@ struct MPC_state
     dump_double_container("CoM_height", CoM_height);
     dump_double_container("CoM_height_vel", CoM_height_vel);
     dump_double_container("CoM_height_acc", CoM_height_acc);
+    dump_double_container("CoM_height_fine", CoM_height_fine);
+    dump_double_container("CoM_height_vel_fine", CoM_height_vel_fine);
+    dump_double_container("CoM_height_acc_fine", CoM_height_acc_fine);
     dump_double_container("eta_vec", eta_vec);
     dump_vec3_container("SupPolygon", SupPolygon);
     dump_vec3_container("FeasibilityPolygon", FeasibilityPolygon);
@@ -500,6 +468,9 @@ void ClearSolveState()
   CoM_height.clear();
   CoM_height_vel.clear();
   CoM_height_acc.clear();
+  CoM_height_fine.clear();
+  CoM_height_vel_fine.clear();
+  CoM_height_acc_fine.clear();
   eta_vec.clear();
   SupPolygon.clear();
   FeasibilityPolygon.clear();

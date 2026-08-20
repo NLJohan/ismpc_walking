@@ -6,6 +6,9 @@ void Walking_controller::AddToLog()
   logger().addLogEntry("Contact point angular momentum / (m*H)", [this]() -> Eigen::Vector3d {
     return compute_momentum_contact_point().couple() / (robot().mass() * controller_config_.stab_config.comHeight);
   });
+  logger().addLogEntry("comTask_target_pos", [this]() -> const Eigen::Vector3d & { return p_com_logged_; });
+  logger().addLogEntry("comTask_target_vel", [this]() -> const Eigen::Vector3d & { return Vc_logged_; });
+  logger().addLogEntry("comTask_target_acc", [this]() -> const Eigen::Vector3d & { return acc_com_logged_; });
   logger().addLogEntry("Kinematic LeftFoot ratio", [this]() -> double { return LeftFootRatio; });
   logger().addLogEntry("RealRobotCoM", [this]() -> Eigen::Vector3d { return stabTask->measuredCoM(); });
   logger().addLogEntry("SwingFoot Vel", [this]() -> const Eigen::Vector3d & { return swingFootVel; });

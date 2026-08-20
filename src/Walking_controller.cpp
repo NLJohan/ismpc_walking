@@ -424,8 +424,10 @@ void Walking_controller::ComputeWalkingTrajectory()
     mpc_thread_state.CoM_height = MPCSolver.CoM_height_vec();
     mpc_thread_state.CoM_height_vel = MPCSolver.CoM_height_vel_vec();
     mpc_thread_state.CoM_height_acc = MPCSolver.CoM_height_acc_vec();
+    mpc_thread_state.CoM_height_fine = MPCSolver.CoM_height_fine_vec();
+    mpc_thread_state.CoM_height_vel_fine = MPCSolver.CoM_height_vel_fine_vec();
+    mpc_thread_state.CoM_height_acc_fine = MPCSolver.CoM_height_acc_fine_vec();
     mpc_thread_state.eta_vec = MPCSolver.eta_vec();
-    mpc_thread_state.com_height_substep_ratio = static_cast<size_t>(MPCSolver.delta_mpc() / MPCSolver.delta_control());
     mpc_thread_state.Index = 1 + static_cast<int>(mpc_thread_process_time * 1e-3 / controller_timestep);
     mpc_thread_state.SupPolygon = MPCSolver.get_polynome_support();
     mpc_thread_state.Traj_ant = MPCSolver.GetAfterTc_ZMP_trajectory();
@@ -948,10 +950,6 @@ void Walking_controller::MoveCoM()
   Vc_logged_ = Vc;
   acc_com_logged_ = acc_com;
 
-  logger().addLogEntry("comTask_target_pos", [this]() -> const Eigen::Vector3d & { return p_com_logged_; });
-  logger().addLogEntry("comTask_target_vel", [this]() -> const Eigen::Vector3d & { return Vc_logged_; });
-  logger().addLogEntry("comTask_target_acc", [this]() -> const Eigen::Vector3d & { return acc_com_logged_; });
-  
   comTask->com(p_com);
   comTask->refVel(Vc);
   comTask->refAccel(acc_com);
