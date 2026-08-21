@@ -657,11 +657,11 @@ bool Walking_controller::run()
       NewThreadState = false;
       updateAdmittance = true;
     }
-    std::cerr << "[RUN_DEBUG] X_MPC.size()=" << mpc_state_.X_MPC.size()
-          << " Y_MPC.size()=" << mpc_state_.Y_MPC.size()
-          << " Index=" << mpc_state_.Index
-          << " QPSuccess=" << mpc_state_.QPSuccess
-          << std::endl;
+    // std::cerr << "[RUN_DEBUG] X_MPC.size()=" << mpc_state_.X_MPC.size()
+    //       << " Y_MPC.size()=" << mpc_state_.Y_MPC.size()
+    //       << " Index=" << mpc_state_.Index
+    //       << " QPSuccess=" << mpc_state_.QPSuccess
+    //       << std::endl;
     MoveCoM();
     UpdateInitialVectors();
     UpdatePlanner_input();
@@ -755,9 +755,11 @@ bool Walking_controller::run()
         controller_config_.stab_config_standing.copAdmittance.setZero();
         controller_config_.stab_config_standing.dfAdmittance.setZero();
       }
-      configureStabilizer(StabilizerState::Standing, controller_config_.stab_config_standing,
-                          controller_config_.lambda_dbl_supp,
-                          stabilizer_state_ != StabilizerState::Standing ? "configure std" : "");
+      if(stabilizer_state_ != StabilizerState::Standing)
+      {
+        configureStabilizer(StabilizerState::Standing, controller_config_.stab_config_standing,
+                            controller_config_.lambda_dbl_supp, "configure std");
+      }
     }
   }
   controller_config_.stab_config = stabTask->config();
