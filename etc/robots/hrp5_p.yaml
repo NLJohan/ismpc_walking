@@ -48,7 +48,7 @@ stabilizer:
     com:
       stiffness: [100.,100.,100.]
       dimWeight: [1 , 1 , 1]
-      height : 0.8
+      height : 0.75
       weight: 10000.
   dcm_bias:
     dcmMeasureErrorStd: 0.001

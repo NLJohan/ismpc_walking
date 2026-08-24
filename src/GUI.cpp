@@ -271,10 +271,39 @@ void Walking_controller::addToGUI()
       // !ZMP_correction;}),
       mc_rtc::gui::Label("Stab Error (m)", [this]() { return this->mpc_state_.stab_error; }),
       mc_rtc::gui::Label("MPC Processing Time (ms)", [this]() { return this->mpc_thread_process_time; }),
-      mc_rtc::gui::Label("Run Loop Processing Time (ms)", [this]() { return this->ControllerLoopTime; })
+      mc_rtc::gui::Label("Run Loop Processing Time (ms)", [this]() { return this->ControllerLoopTime; }),
       // mc_rtc::gui::Label("ZMP box range x",[this](){return this->MPCSolver.ZMP_dx;}),
       // mc_rtc::gui::Label("ZMP box range y",[this](){return this->MPCSolver.ZMP_dy;})
-  );
+      mc_rtc::gui::ComboInput(
+        "CoM Height Signal", {"RL (default)", "Sine", "PerStepCosine", "Step"},
+        [this]() { return ToString(MPCSolver.TestSignal()); },
+        [this](const std::string & str) { MPCSolver.TestSignal(FromString(str)); }),
+      mc_rtc::gui::Form(
+        "CoM Height: Sine",
+        [this](const mc_rtc::Configuration & data) {
+        MPCSolver.SetSineParams(data("CoM avg height"), data("Amplitude"), data("Period"));
+        },
+        mc_rtc::gui::FormNumberInput("CoM avg height", false, [this]() { return MPCSolver.CoMHeightAvg(); }),
+        mc_rtc::gui::FormNumberInput("Amplitude", false, [this]() { return MPCSolver.CoMHeightAmplitude(); }),
+        mc_rtc::gui::FormNumberInput("Period", false, [this]() { return MPCSolver.CoMHeightPeriod(); })),
+      mc_rtc::gui::Form(
+        "CoM Height: PerStepCosine",
+        [this](const mc_rtc::Configuration & data) {
+        MPCSolver.SetPerStepCosineParams(data("CoM avg height"), data("Amplitude"));
+        },
+        mc_rtc::gui::FormNumberInput("CoM avg height", false, [this]() { return MPCSolver.CoMHeightAvg(); }),
+        mc_rtc::gui::FormNumberInput("Amplitude", false, [this]() { return MPCSolver.CoMHeightAmplitude(); })),
+      mc_rtc::gui::Form(
+        "CoM Height: Step",
+        [this](const mc_rtc::Configuration & data) {
+        double now = MPCSolver.GlobalTime();
+        double delay = data("Timing (s from now)");
+        MPCSolver.SetStepParams(data("Height before"), data("Amplitude"), now + delay);
+        },
+        mc_rtc::gui::FormNumberInput("Height before", false, [this]() { return MPCSolver.CoMHeightAvg(); }),
+        mc_rtc::gui::FormNumberInput("Timing (s from now)", false, 1.0),
+        mc_rtc::gui::FormNumberInput("Amplitude", false, [this]() { return MPCSolver.CoMHeightAmplitude(); }))
+    );
 
   gui()->addElement(
       {"Walking", "Footsteps Parameters"},

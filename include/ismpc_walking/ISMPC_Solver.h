@@ -9,6 +9,15 @@
 #include <pendulum_feasibility_solver/feasibility_solver.h>
 #include <thread>
 
+enum class CoMHeightTestSignal
+{
+  PerStepCosine,
+  Step,
+  Sine,
+  RlSine 
+};  
+std::string ToString(CoMHeightTestSignal s);
+CoMHeightTestSignal FromString(const std::string & s);
 
 class ISMPC_Solver
 {
@@ -440,6 +449,30 @@ public:
     return m_lambda;
   }
 
+  CoMHeightTestSignal TestSignal() const noexcept { return m_test_signal; }
+  void TestSignal(CoMHeightTestSignal s) noexcept { m_test_signal = s; }
+  double GlobalTime() const noexcept { return m_t_global; }
+  double CoMHeightAvg() const noexcept { return CoM_height_avg; }
+  double CoMHeightAmplitude() const noexcept { return m_com_z_amplitude; }
+  double CoMHeightPeriod() const noexcept { return m_com_z_test_period; }
+  double CoMHeightTriggerTime() const noexcept { return m_com_z_test_t0; }
+
+
+  void SetSineParams(double avg, double amplitude, double period) noexcept
+  {
+    CoM_height_avg = avg; m_com_z_amplitude = amplitude; m_com_z_test_period = period;
+  }
+
+  void SetPerStepCosineParams(double avg, double amplitude) noexcept
+  {
+    CoM_height_avg = avg; m_com_z_amplitude = amplitude;
+  }
+
+  void SetStepParams(double before, double amplitude, double absolute_trigger_time) noexcept
+  {
+    CoM_height_avg = before; m_com_z_amplitude = amplitude; m_com_z_test_t0 = absolute_trigger_time;
+  }
+
   double support_state()
   {
     return m_support_state;
@@ -780,37 +813,30 @@ private:
    */
   bool Slide_ZMP_region = false;
 
+  CoMHeightTestSignal m_test_signal = CoMHeightTestSignal::RlSine;
+
   // CoM_height[i] = m_rl_com_z_offset + m_rl_com_z_sin_amp * sin_phase + m_rl_com_z_cos_amp * cos_phase
-  double m_rl_com_z_offset = 0.7;      // RL-set CoM height offset (m)
+  double m_rl_com_z_offset = 0.75;      // RL-set CoM height offset (m)
   double m_rl_com_z_frequency = 0.0;   // RL-set sine frequency (Hz)
   double m_rl_com_z_sin_amp = 0.0;   // RL-set sine amplitude
   double m_rl_com_z_cos_amp = 0.0;   // RL-set cosine amplitude
 
+  double CoM_height_avg = 0.75; // CoM height offset, avg value for sine signal or height before step (metres)
+  double m_com_z_amplitude = 0.00; // Amplitude of the CoM height oscillation (metres)
+  double m_com_z_test_period = 1.0; // Sine-test period (s), wall-clock
+
+  double m_com_z_test_t0 = 15.0;  // Step-test trigger time (s), wall-clock
+
   std::vector<double> m_eta; // Prendulum frequency
   std::vector<double> m_eta_free; // Prendulum frequency disturbance free
+  // m_delta_control (low) frequency for eta computation
   std::vector<double> CoM_height;
-  // Analytic first/second time-derivatives of CoM_height[i], populated ONLY
-  // for signal cases whose z(t) is smooth and has a genuine closed form
-  // (Sine, RlSine; PerStepCosine reserved for a later pass -- see its case
-  // block). Step's case is a true mathematical step and has neither. Sized
-  // and filled in lockstep with CoM_height every solve; NOT filled/cleared
-  // by cases that don't compute them, so callers must not assume staleness
-  // is detectable from size alone across an active-signal-type change --
-  // this codebase only ever runs one test_signal (compile-time constant),
-  // so that situation does not currently arise in practice.
   std::vector<double> CoM_height_vel;
   std::vector<double> CoM_height_acc;
-  // Fine-resolution (X_MPC/Y_MPC-matching, m_delta_control-spaced) CoM-height
-  // reference, for smooth task-target consumption via MPC_state's accessors
-  // (Get_CoM_planarTarget/Get_CoMVel_planarTarget/Get_CoMHeightAccel_target).
-  // Populated ADDITIONALLY to (not instead of) the coarse CoM_height/vel/acc
-  // above -- CoM_height (coarse) still exclusively feeds m_eta/Integrate()/
-  // Compute_Riccati_Kernel(), completely unchanged by this addition. Do not
-  // read these _fine members from Integrate() or anything feeding m_eta.
+  // m_delta (high) frequency for CoM task 
   std::vector<double> CoM_height_fine;
   std::vector<double> CoM_height_vel_fine;
   std::vector<double> CoM_height_acc_fine;
-  double CoM_height_avg = 0.8;
 
   // --- Variable-height Riccati stability kernel (Compute_Riccati_Kernel / Compute_Hk_And_bfree) ---
   // All sized N_fine+1 with N_fine = m_C * m_riccati_substeps; index N_fine is the tail node at t0+Tc.
@@ -822,9 +848,6 @@ private:
   std::vector<double> m_K_kernel; // K(t0,t) = beta(t) * exp(-B(t0,t))
   std::vector<double> m_G_kernel; // Closed-loop kernel G(t0,s), backward recursion, tail-seeded
   std::vector<double> m_S_cum; // S(t0,s) = integral_s^inf G(t0,tau) dtau, backward cumulative, tail-seeded
-  double m_com_z_amplitude = 0.05; // Amplitude of the CoM height oscillation (metres)
-  double m_com_z_test_t0 = 15.0;      // Step-test trigger time (s), wall-clock, replaces old hardcoded 15.0
-  double m_com_z_test_period = 1.0;   // Sine-test period (s), wall-clock
   // Elapsed time since the start of the current step cycle, used to compute
   // the phase-based CoM height profile. Reset to 0 at each step switch.
   double m_tk_within_step = 0.0;

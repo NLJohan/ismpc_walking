@@ -354,6 +354,26 @@ void ISMPC_Solver::configure(const ControllerConfiguration & config)
   Compute_Integration_Matrix(m_eta);
 }
 
+std::string ToString(CoMHeightTestSignal s)
+{
+  switch(s)
+  {
+    case CoMHeightTestSignal::Sine: return "Sine";
+    case CoMHeightTestSignal::PerStepCosine: return "PerStepCosine";
+    case CoMHeightTestSignal::Step: return "Step";
+    case CoMHeightTestSignal::RlSine: return "RL (default)";
+    default: return "RL (default)";
+  }
+}
+
+CoMHeightTestSignal FromString(const std::string & s)
+{
+  if(s == "PerStepCosine") return CoMHeightTestSignal::PerStepCosine;
+  if(s == "Step") return CoMHeightTestSignal::Step;
+  if(s == "Sine") return CoMHeightTestSignal::Sine;
+  return CoMHeightTestSignal::RlSine; // "RL (default)" or unknown → safe fallback
+}
+
 void ISMPC_Solver::init_MPC(const MPC_state & mpc_state, std::string Tail, int Steps_Desired, int Step)
 {
   P_c_k = mpc_state.p_c_k;
@@ -369,6 +389,7 @@ void ISMPC_Solver::init_MPC(const MPC_state & mpc_state, std::string Tail, int S
   m_t_lift = mpc_state.t_lift;
 
   m_tk = std::max(0., mpc_state.t_k);
+  mc_rtc::log::warning("mpc_state.t_k = {}, m_tk={}", mpc_state.t_k, m_tk);
   m_t_global = mpc_state.t;
   m_delay_elapsed = std::min(m_delay - (m_t_global - m_t_delay), m_delay);
   if(m_t_global - m_t_delay > m_delta || m_tk == 0 || m_delay_elapsed < 0)
@@ -436,42 +457,7 @@ void ISMPC_Solver::init_MPC(const MPC_state & mpc_state, std::string Tail, int S
     m_tk_within_step += m_delta;
   }
 
-  // Build a flat array of step durations over the control horizon from m_timestamp.
-  // step_duration[j] = duration of the j-th upcoming step, step_start[j] = time relative
-  // to now at which step j starts. Index 0 is the current step (already started at
-  // -m_tk_within_step relative to now, landing at m_timestamp[0] - m_tk relative to now).
-  //
-  // We express everything as time-relative-to-now (t_i = i * m_delta) for sample i.
-  // Step j spans [t_start_j, t_end_j) where t_end_j = m_timestamp[j] - m_tk.
-  // The duration of step j is T_j = t_end_j - t_start_j.
-  // The phase of sample i within step j is phi = (t_i - t_start_j + m_tk_within_step) / T_j
-  // (the m_tk_within_step term accounts for the fact that step 0 already started earlier).
-  //
-  // NOTE: the above per-step-phase-locked cosine profile (crouch/extend timed to footstep
-  // phase) is a real, physically-motivated FEATURE, kept available below behind
-  // CoMHeightTestSignal::PerStepCosine, but is NOT what should be used for CoM-z tracking
-  // identification tests: it couples the height profile to footstep timing (variable T_j,
-  // fragile phase bookkeeping across step transitions -- this is what produced the spike
-  // artifacts seen in earlier logged sine-response data), which is exactly the confound we
-  // want to AVOID when trying to isolate the whole-body-controller's own height-tracking
-  // dynamics. For identification, use a wall-clock-based step or sine (below), decoupled
-  // entirely from footstep phase.
-
-  // --- CoM-height reference profile selector (for CoM-z tracking identification tests) ---
-  // Only one of these should be active at a time; PerStepCosine is the physically-motivated
-  // production profile, Step and Sine are wall-clock test signals for system identification
-  // (clean impulse/step response fitting, or frequency-domain / least-squares sine fitting).
-  enum class CoMHeightTestSignal
-  {
-    PerStepCosine,
-    Step,
-    Sine,
-    RlSine // RL-driven sine: offset/amplitude/frequency/phase from
-           // SetCoMHeightSineParams(), set externally each control period.
-  };
-  constexpr CoMHeightTestSignal test_signal = CoMHeightTestSignal::RlSine;
-
-  switch(test_signal)
+  switch(m_test_signal)
   {
     case CoMHeightTestSignal::PerStepCosine:
     {
@@ -479,12 +465,19 @@ void ISMPC_Solver::init_MPC(const MPC_state & mpc_state, std::string Tail, int S
 
         // Local helper: given absolute-ish time-relative-to-now t_i, walk step index j (starting
         // fresh each call, since fine-loop sample count differs from coarse) to find which step
-        // contains t_i, and return {height, zc_ddot} at that instant. Re-deriving j from scratch
-        // per sample (rather than incrementally across the whole loop, as the original coarse-only
-        // version did) is a deliberate correctness-over-micro-efficiency choice: the fine loop has
-        // n_fine (up to ~301) samples, and re-walking m_timestamp (size m_C, ~30) per sample is
-        // cheap relative to everything else this function does.
-        auto eval_at = [&](double t_i) -> std::pair<double, double>
+        // contains t_i, and return {height, zc_dot, zc_ddot} at that instant. Re-deriving j from
+        // scratch per sample (rather than incrementally across the whole loop, as the original
+        // coarse-only version did) is a deliberate correctness-over-micro-efficiency choice: the
+        // fine loop has n_fine (up to ~301) samples, and re-walking m_timestamp (size m_C, ~30)
+        // per sample is cheap relative to everything else this function does.
+        //
+        // zc_dot is now also closed-form: phi advances linearly in time within a step
+        // (dphi/dt = 1/T_j), so height(t) = avg - A*cos(2*pi*phi) differentiates to
+        // zc_dot = A*(2*pi/T_j)*sin(2*pi*phi), matching zc_ddot's existing omega_j = 2*pi/T_j
+        // convention. Both zc_dot and zc_ddot vanish at phi=0 and phi=1 (sin(0)=sin(2*pi)=0),
+        // so this stays well-behaved across step-boundary transitions despite T_j varying
+        // step-to-step (unlike Sine's fixed-period case).
+        auto eval_at = [&](double t_i) -> std::tuple<double, double, double>
         {
             double t_start_j = -m_tk_within_step;
             size_t j = 0;
@@ -496,12 +489,17 @@ void ISMPC_Solver::init_MPC(const MPC_state & mpc_state, std::string Tail, int S
                 t_end_j = (j < m_timestamp.size()) ? (m_timestamp[j] - m_tk) : (m_timestamp.back() - m_tk + m_Tds);
             }
             const double T_j = t_end_j - t_start_j;
+
             const double T_j_safe = (T_j > 1e-6) ? T_j : 1e-6;
             const double phi = std::clamp((t_i - t_start_j) / T_j_safe, 0.0, 1.0);
+            const double omega_j = 2.0 * M_PI / T_j_safe;
             const double cos_phi = std::cos(2.0 * M_PI * phi);
+            const double sin_phi = std::sin(2.0 * M_PI * phi);
             const double height = CoM_height_avg - m_com_z_amplitude * cos_phi;
+            const double zc_dot = m_com_z_amplitude * omega_j * sin_phi;
             const double zc_ddot = m_com_z_amplitude * (four_pi_sq / (T_j_safe * T_j_safe)) * cos_phi;
-            return {height, zc_ddot};
+            mc_rtc::log::warning("[Tj DEBUG] T_j={}, phi={}, j={}, height={}", T_j, phi, j, height);
+            return {height, zc_dot, zc_ddot};
         };
 
         // UNCHANGED coarse loop, now calling eval_at() instead of inlining the walk --
@@ -509,16 +507,22 @@ void ISMPC_Solver::init_MPC(const MPC_state & mpc_state, std::string Tail, int S
         // re-derives j/t_start_j incrementally starting from j=0 at the top of the
         // switch-case (this is called once per init_MPC(), so j always starts at 0
         // here regardless of restructuring).
+        CoM_height_vel.resize(static_cast<size_t>(m_C));
+        CoM_height_acc.resize(static_cast<size_t>(m_C));
         for(int i = 0; i < m_C; ++i)
         {
             const double t_i = static_cast<double>(i) * m_delta;
-            const auto [height, zc_ddot] = eval_at(t_i);
+            const auto [height, zc_dot, zc_ddot] = eval_at(t_i);
             CoM_height[i] = height;
+            CoM_height_vel[i] = zc_dot;
+            CoM_height_acc[i] = zc_ddot;
             m_eta[i] = std::sqrt((zc_ddot + g) / CoM_height[i]);
             m_eta_free[i] = m_eta[i];
         }
 
-        // NEW: fine-resolution reference for task-target accessors only.
+        // NEW: fine-resolution reference for task-target accessors only, now including the
+        // closed-form velocity feedforward (previously left at 0.0 -- see eval_at's comment
+        // above for the derivation).
         {
             const int N_fine = static_cast<int>(m_delta / m_delta_control);
             const size_t n_fine = static_cast<size_t>(m_C) * static_cast<size_t>(N_fine) + 1;
@@ -528,14 +532,10 @@ void ISMPC_Solver::init_MPC(const MPC_state & mpc_state, std::string Tail, int S
             for(size_t idx = 0; idx < n_fine; ++idx)
             {
                 const double t_i = static_cast<double>(idx) * m_delta_control;
-                const auto [height, zc_ddot] = eval_at(t_i);
+                const auto [height, zc_dot, zc_ddot] = eval_at(t_i);
                 CoM_height_fine[idx] = height;
+                CoM_height_vel_fine[idx] = zc_dot;
                 CoM_height_acc_fine[idx] = zc_ddot;
-                // No closed-form zc_dot in the original PerStepCosine case (it was never
-                // computed there, only zc_ddot) -- leaving CoM_height_vel_fine unpopulated
-                // (zero, from resize()'s default) for this case, matching the original's
-                // scope. Flag if per-step velocity feedforward is ever wanted here.
-                CoM_height_vel_fine[idx] = 0.0;
             }
         }
         break;
@@ -543,21 +543,30 @@ void ISMPC_Solver::init_MPC(const MPC_state & mpc_state, std::string Tail, int S
 
     case CoMHeightTestSignal::Step:
     {
-      // Single wall-clock step, decoupled from footstep phase, for clean step-response
-      // identification (fit a 1st/2nd-order model to CoM_height_actual(t) vs this reference).
-      // Zero feedforward acceleration: the reference is a true mathematical step (infinite
-      // acceleration at the edge, not representable/meaningful as a feedforward term here);
-      // this is intentional and matches what a step-response identification test wants to see
-      // (an INPUT step, with all resulting z_ddot behavior coming from the plant/tracking
-      // dynamics being identified, not fed forward from the reference itself).
       for(int i = 0; i < m_C; ++i)
       {
-        const double t_i = m_t_global + static_cast<double>(i) * m_delta; // absolute time of sample i
+        const double t_i = m_t_global + static_cast<double>(i) * m_delta;
         CoM_height[i] = (t_i < m_com_z_test_t0) ? CoM_height_avg : (CoM_height_avg + m_com_z_amplitude);
 
         const double zc_ddot = 0.0;
         m_eta[i] = std::sqrt((zc_ddot + g) / CoM_height[i]);
         m_eta_free[i] = m_eta[i];
+      }
+
+      // NEW: fine-resolution reference for task-target accessors, same pattern as Sine's case.
+      {
+        const int N_fine = static_cast<int>(m_delta / m_delta_control);
+        const size_t n_fine = static_cast<size_t>(m_C) * static_cast<size_t>(N_fine) + 1;
+        CoM_height_fine.resize(n_fine);
+        CoM_height_vel_fine.resize(n_fine);
+        CoM_height_acc_fine.resize(n_fine);
+        for(size_t idx = 0; idx < n_fine; ++idx)
+        {
+          const double t_i = m_t_global + static_cast<double>(idx) * m_delta_control;
+          CoM_height_fine[idx] = (t_i < m_com_z_test_t0) ? CoM_height_avg : (CoM_height_avg + m_com_z_amplitude);
+          CoM_height_vel_fine[idx] = 0.0; // true step: no meaningful feedforward derivative
+          CoM_height_acc_fine[idx] = 0.0;
+        }
       }
       break;
     }
