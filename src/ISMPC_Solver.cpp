@@ -334,7 +334,10 @@ void ISMPC_Solver::configure(const ControllerConfiguration & config)
   m_eta.resize(m_C);
   m_eta_free.resize(m_C);
 
-  CoM_height_avg = config.stab_config.comHeight;
+  if(!m_com_height_avg_overridden_by_gui)
+  {
+    CoM_height_avg = config.stab_config.comHeight;
+  }
 
   // Same as constructor: fill with constant nominal until init_MPC() has footstep timings.
   const double eta_nom_cfg = std::sqrt(g / CoM_height_avg);
@@ -389,7 +392,6 @@ void ISMPC_Solver::init_MPC(const MPC_state & mpc_state, std::string Tail, int S
   m_t_lift = mpc_state.t_lift;
 
   m_tk = std::max(0., mpc_state.t_k);
-  mc_rtc::log::warning("mpc_state.t_k = {}, m_tk={}", mpc_state.t_k, m_tk);
   m_t_global = mpc_state.t;
   m_delay_elapsed = std::min(m_delay - (m_t_global - m_t_delay), m_delay);
   if(m_t_global - m_t_delay > m_delta || m_tk == 0 || m_delay_elapsed < 0)
@@ -498,7 +500,6 @@ void ISMPC_Solver::init_MPC(const MPC_state & mpc_state, std::string Tail, int S
             const double height = CoM_height_avg - m_com_z_amplitude * cos_phi;
             const double zc_dot = m_com_z_amplitude * omega_j * sin_phi;
             const double zc_ddot = m_com_z_amplitude * (four_pi_sq / (T_j_safe * T_j_safe)) * cos_phi;
-            mc_rtc::log::warning("[Tj DEBUG] T_j={}, phi={}, j={}, height={}", T_j, phi, j, height);
             return {height, zc_dot, zc_ddot};
         };
 

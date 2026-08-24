@@ -461,16 +461,19 @@ public:
   void SetSineParams(double avg, double amplitude, double period) noexcept
   {
     CoM_height_avg = avg; m_com_z_amplitude = amplitude; m_com_z_test_period = period;
+    m_com_height_avg_overridden_by_gui = true;
   }
 
   void SetPerStepCosineParams(double avg, double amplitude) noexcept
   {
     CoM_height_avg = avg; m_com_z_amplitude = amplitude;
+    m_com_height_avg_overridden_by_gui = true;
   }
 
   void SetStepParams(double before, double amplitude, double absolute_trigger_time) noexcept
   {
     CoM_height_avg = before; m_com_z_amplitude = amplitude; m_com_z_test_t0 = absolute_trigger_time;
+    m_com_height_avg_overridden_by_gui = true;
   }
 
   double support_state()
@@ -812,6 +815,7 @@ private:
    *otherwise it is a polygone defined by two  rectangle on both feets.
    */
   bool Slide_ZMP_region = false;
+  bool m_com_height_avg_overridden_by_gui = false;
 
   CoMHeightTestSignal m_test_signal = CoMHeightTestSignal::RlSine;
 
