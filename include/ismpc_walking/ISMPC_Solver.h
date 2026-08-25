@@ -855,7 +855,7 @@ private:
   // Elapsed time since the start of the current step cycle, used to compute
   // the phase-based CoM height profile. Reset to 0 at each step switch.
   double m_tk_within_step = 0.0;
-  double m_mass = 40.;
+  double m_mass = 101.;
   double g = 9.8; // Gravity acceleration
   double m_tk = 0; // Represent the initial time in the MPC horizon
   double m_t_global = 0; // Global time of the control scheme
