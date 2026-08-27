@@ -820,12 +820,12 @@ private:
   CoMHeightTestSignal m_test_signal = CoMHeightTestSignal::RlSine;
 
   // CoM_height[i] = m_rl_com_z_offset + m_rl_com_z_sin_amp * sin_phase + m_rl_com_z_cos_amp * cos_phase
-  double m_rl_com_z_offset = 0.75;      // RL-set CoM height offset (m)
+  double m_rl_com_z_offset = 0.95;      // RL-set CoM height offset (m)
   double m_rl_com_z_frequency = 0.0;   // RL-set sine frequency (Hz)
   double m_rl_com_z_sin_amp = 0.0;   // RL-set sine amplitude
   double m_rl_com_z_cos_amp = 0.0;   // RL-set cosine amplitude
 
-  double CoM_height_avg = 0.75; // CoM height offset, avg value for sine signal or height before step (metres)
+  double CoM_height_avg = 0.95; // CoM height offset, avg value for sine signal or height before step (metres)
   double m_com_z_amplitude = 0.00; // Amplitude of the CoM height oscillation (metres)
   double m_com_z_test_period = 1.0; // Sine-test period (s), wall-clock
 
