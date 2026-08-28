@@ -540,6 +540,8 @@ private:
   double y = 0.1;
   double z = 30; // Coordinate for a specified footstep position
 
+  double last_applied_lambda_ = -1.0;
+
   Eigen::Vector3d p_com_logged_ = Eigen::Vector3d::Zero();
   Eigen::Vector3d Vc_logged_ = Eigen::Vector3d::Zero();
   Eigen::Vector3d acc_com_logged_ = Eigen::Vector3d::Zero();
