@@ -30,6 +30,7 @@ struct ControllerConfiguration
   double lambda_ = 100.;
   double lambda_sg_supp = 100;
   double lambda_dbl_supp = 100;
+  double lambda_standing = 100;
   double zmp_delay = 1e-2;
   Eigen::Vector2d Beta_range{1e10, 1e2};
   bool sliding_zmp_cstr_region = false;

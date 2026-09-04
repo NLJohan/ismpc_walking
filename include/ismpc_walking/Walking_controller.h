@@ -80,6 +80,11 @@ public:
     controller_config_.Beta_zmp_traj = config("ismpc")("beta_traj");
     controller_config_.lambda_sg_supp = config("ismpc")("lambda");
     controller_config_.lambda_dbl_supp = controller_config_.lambda_sg_supp;
+    controller_config_.lambda_standing = controller_config_.lambda_dbl_supp;
+    if(config("ismpc").has("lambda_standing"))
+    {
+      controller_config_.lambda_standing = config("ismpc")("lambda_standing");
+    }
     if(config("ismpc").has("lambda_dbl_supp"))
     {
       controller_config_.lambda_dbl_supp = config("ismpc")("lambda_dbl_supp");
@@ -187,6 +192,7 @@ public:
     controller_config_ = config;
     controller_config_.stab_config_sg_supp.copFzLambda = controller_config_.lambda_sg_supp * Eigen::Vector3d::Ones();
     controller_config_.stab_config_dbl_supp.copFzLambda = controller_config_.lambda_dbl_supp * Eigen::Vector3d::Ones();
+    controller_config_.stab_config.copFzLambda = controller_config_.lambda_standing * Eigen::Vector3d::Ones();
 
     controller_config_.Beta_step = std::min(controller_config_.Beta_range(1),
                                             std::max(controller_config_.Beta_range(0), controller_config_.Beta_step));

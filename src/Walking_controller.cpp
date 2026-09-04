@@ -758,40 +758,10 @@ bool Walking_controller::run()
       if(stabilizer_state_ != StabilizerState::Standing)
       {
         configureStabilizer(StabilizerState::Standing, controller_config_.stab_config_standing,
-                            controller_config_.lambda_dbl_supp, "configure std");
+                            controller_config_.lambda_standing, "configure std");
       }
     }
-
-    // NEW: re-apply the CURRENT state's stabilizer config if its lambda was
-    // changed live via the GUI, even without a state transition. Each branch
-    // above already picks which lambda belongs to which state (note Standing
-    // reuses lambda_dbl_supp, same as the DoubleSupport branch -- preserved
-    // here). Comparing against a small epsilon, not exact equality, since
-    // these are doubles and the GUI writes them directly.
-    double active_lambda = (stabilizer_state_ == StabilizerState::SingleSupport) ? controller_config_.lambda_sg_supp
-                          : controller_config_.lambda_dbl_supp;  // covers both DoubleSupport and Standing
-
-    if(std::abs(active_lambda - last_applied_lambda_) > 1e-9)
-    {
-      switch(stabilizer_state_)
-      {
-        case StabilizerState::SingleSupport:
-          configureStabilizer(StabilizerState::SingleSupport, controller_config_.stab_config_sg_supp,
-                              controller_config_.lambda_sg_supp, "configure sg (lambda live-update)");
-          break;
-        case StabilizerState::DoubleSupport:
-          configureStabilizer(StabilizerState::DoubleSupport, controller_config_.stab_config_dbl_supp,
-                              controller_config_.lambda_dbl_supp, "configure dbl (lambda live-update)");
-          break;
-        case StabilizerState::Standing:
-          configureStabilizer(StabilizerState::Standing, controller_config_.stab_config_standing,
-                              controller_config_.lambda_dbl_supp, "configure std (lambda live-update)");
-          break;
-      }
-      last_applied_lambda_ = active_lambda;
-    }
-  }  
-  
+  }
   controller_config_.stab_config = stabTask->config();
 
   count += 1;

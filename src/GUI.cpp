@@ -232,6 +232,9 @@ void Walking_controller::addToGUI()
           "Robot Step Recovery", [this]() { return UseStepRecovery; },
           [this]() { UseStepRecovery = !UseStepRecovery; }),
       mc_rtc::gui::NumberInput(
+          "lambda standing", [this]() -> double { return controller_config_.lambda_standing; },
+          [this](const double n) { controller_config_.lambda_standing = n; }),
+      mc_rtc::gui::NumberInput(
           "lambda sg support", [this]() -> double { return controller_config_.lambda_sg_supp; },
           [this](const double n) { controller_config_.lambda_sg_supp = n; }),
       mc_rtc::gui::NumberInput(
