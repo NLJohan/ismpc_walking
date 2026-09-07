@@ -944,7 +944,7 @@ private:
   double m_Beta_dcm_vel = 0;
   double m_Beta_dcm_vel_stop = 1000;
   double m_lambda = 25;
-  double m_delay = 0.02; // delay ( < m_delta ) during which zmp is under previous input Uk
+  double m_delay = 0.03; // delay ( < m_delta ) during which zmp is under previous input Uk
   double m_delay_elapsed = 0; // Between 0 and m_delay represent the remaining time the delay must be applied
   double m_t_delay = 0; // represent when the delay has been applied
   double m_t_lift = 0; // time when the foot contact has been released

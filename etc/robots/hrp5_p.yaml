@@ -1,6 +1,6 @@
 ismpc:
   lambda: 25
-  zmp_delay: 0.02
+  zmp_delay: 0.031
   u_cstr_square: [0.2,0.13]
   zmp_cstr_square: [0.2,0.12]
   zmp_ref_offset: [0.0,0.03]
@@ -28,7 +28,7 @@ stabilizer:
       deriv: [0., 0.]
       comdError: 0.
   admittance:
-    df: [0.0001,0.0001,0.0001]
+    df: [0.0001,0.0001,0.00005]
     rollAdmittance: 0.0000
     cop: [0.01, 0.01]
     copFzLambda: [25, 25, 25]
