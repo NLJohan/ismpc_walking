@@ -459,26 +459,147 @@ void ISMPC_Solver::init_MPC(const MPC_state & mpc_state, std::string Tail, int S
     m_tk_within_step += m_delta;
   }
 
+  // =====================================================================================
+  // Mode-switch queue: TestSignal(s) (see header) no longer writes m_test_signal directly.
+  // It stages m_pending_test_signal + m_mode_switch_pending, and the actual swap only
+  // happens here, once the CURRENTLY ACTIVE mode's live height reaches avg, climbing --
+  // the same continuity condition used below for PerStepCosine's own param-splice (see
+  // that case for why "avg, climbing" is phi≈0.25, NOT phi≈0/the step boundary).
+  //
+  // This check must run BEFORE the switch below, since it may change which case's math
+  // actually executes this tick.
+  if(m_mode_switch_pending)
+  {
+      constexpr double kHeightEps = 1e-2; // m
+      constexpr double kVelEpsSign = 1e-6; // m/s, only sign matters here
+      bool safe_to_switch = false;
+
+      switch(m_test_signal) // the CURRENTLY ACTIVE mode, not the pending one
+      {
+          case CoMHeightTestSignal::Sine:
+          {
+              // Probe using m_sine_phase's value as it stands right now (i.e. where last
+              // tick's integration left it) -- this case's own body below will integrate it
+              // further forward from here regardless of whether we switch this tick.
+              const double h = CoM_height_avg + m_com_z_amplitude * std::sin(m_sine_phase);
+              const double v_sign = std::cos(m_sine_phase); // sign of zc_dot
+              const bool current_amplitude_is_zero = std::abs(m_com_z_amplitude) < 1e-9;
+              safe_to_switch = current_amplitude_is_zero
+                               || (std::abs(h - CoM_height_avg) < kHeightEps && v_sign > kVelEpsSign);
+              break;
+          }
+          case CoMHeightTestSignal::PerStepCosine:
+          {
+              // Probe phi "now" (t_i=0) via the same walk eval_at() performs, read-only, no
+              // stateful side effects. height==avg, climbing, is phi≈0.25 here (see note in
+              // the PerStepCosine case below for the derivation) -- NOT phi≈0 (the trough).
+              double t_start_j = -m_tk_within_step;
+              size_t j = 0;
+              double t_end_j =
+                  (j < m_timestamp.size()) ? (m_timestamp[j] - m_tk) : (m_timestamp.back() - m_tk + m_Tds);
+              const double t_i = 0.0;
+              while(j + 1 < m_timestamp.size() && t_i >= m_timestamp[j] - m_tk)
+              {
+                  t_start_j = m_timestamp[j] - m_tk;
+                  ++j;
+                  t_end_j = (j < m_timestamp.size()) ? (m_timestamp[j] - m_tk) : (m_timestamp.back() - m_tk + m_Tds);
+              }
+              const double T_j = t_end_j - t_start_j;
+              const double T_j_safe = (T_j > 1e-6) ? T_j : 1e-6;
+              const double phi = std::clamp((t_i - t_start_j) / T_j_safe, 0.0, 1.0);
+              const double cos_phi = std::cos(2.0 * M_PI * phi);
+              const double sin_phi = std::sin(2.0 * M_PI * phi);
+              const double h = CoM_height_avg - m_com_z_amplitude * cos_phi;
+              const double v_sign = sin_phi; // sign of zc_dot (amplitude*omega_j*sin_phi)
+              const bool current_amplitude_is_zero = std::abs(m_com_z_amplitude) < 1e-9;
+              safe_to_switch = current_amplitude_is_zero
+                               || (std::abs(h - CoM_height_avg) < kHeightEps && v_sign > kVelEpsSign);
+              break;
+          }
+          case CoMHeightTestSignal::Step:
+          case CoMHeightTestSignal::RlSine:
+          default:
+              // Step: flat plateau at any instant -- always safe.
+              // RlSine: RL-driven path, intentionally not gated by this GUI-only mechanism.
+              safe_to_switch = true;
+              break;
+      }
+
+      if(safe_to_switch)
+      {
+          m_test_signal = m_pending_test_signal;
+          m_mode_switch_pending = false;
+
+          // Reset destination-owned clock state. Sine: we own m_sine_phase outright, force
+          // it to the avg-climbing origin. PerStepCosine: nothing to reset -- its phi is
+          // derived fresh from real m_tk/m_timestamp every call, and continuity holds at
+          // this instant because the OUTGOING side only just left at height==avg, climbing.
+          if(m_test_signal == CoMHeightTestSignal::Sine)
+          {
+              m_sine_phase = 0.0;
+              m_sine_last_t_global = m_t_global; // avoid a large dt jump on the very next tick
+          }
+      }
+  }
+
   switch(m_test_signal)
   {
     case CoMHeightTestSignal::PerStepCosine:
     {
+        // Splice in any pending amplitude edit ONLY when the CURRENT (pre-edit) profile's live
+        // height reaches CoM_height_avg, climbing -- i.e. phi ≈ 0.25, NOT the step boundary
+        // (phi ≈ 0, m_tk <= m_delta).
+        //
+        // Why phi=0.25 and not phi=0: height(phi) = avg - amplitude*cos(2*pi*phi). At phi=0
+        // (the step boundary / m_tk reset), cos(0)=1, so height = avg - amplitude -- the
+        // TROUGH, not avg. Splicing there is only value-continuous if the incoming amplitude
+        // happens to equal the outgoing one; for a change TO amplitude 0 in particular, height
+        // jumps from (avg - amplitude) up to avg immediately, which is exactly the "jump to 0
+        // at the bottommost point" symptom observed. height = avg requires cos(2*pi*phi) = 0,
+        // i.e. phi = 0.25 (climbing, sin>0) or phi = 0.75 (descending, sin<0); we require the
+        // climbing one so this is a single well-defined point per step, matching Sine's own
+        // "zero-crossing, climbing" convention above.
+        //
+        // If the CURRENT (pre-edit) amplitude is already (near) zero, the profile is flat at
+        // avg regardless of phi -- no arch to protect continuity against -- bypass immediately.
+        if(m_perstep_params_pending)
+        {
+            constexpr double kZeroAmplitudeEps = 1e-5;
+            const bool current_amplitude_is_zero = std::abs(m_com_z_amplitude) < kZeroAmplitudeEps;
+
+            double t_start_j_probe = -m_tk_within_step;
+            size_t j_probe = 0;
+            double t_end_j_probe = (j_probe < m_timestamp.size()) ? (m_timestamp[j_probe] - m_tk)
+                                                                   : (m_timestamp.back() - m_tk + m_Tds);
+            const double t_i_probe = 0.0;
+            while(j_probe + 1 < m_timestamp.size() && t_i_probe >= m_timestamp[j_probe] - m_tk)
+            {
+                t_start_j_probe = m_timestamp[j_probe] - m_tk;
+                ++j_probe;
+                t_end_j_probe = (j_probe < m_timestamp.size()) ? (m_timestamp[j_probe] - m_tk)
+                                                                : (m_timestamp.back() - m_tk + m_Tds);
+            }
+            const double T_j_probe = t_end_j_probe - t_start_j_probe;
+            const double T_j_probe_safe = (T_j_probe > 1e-6) ? T_j_probe : 1e-6;
+            const double phi_probe = std::clamp((t_i_probe - t_start_j_probe) / T_j_probe_safe, 0.0, 1.0);
+            const double cos_phi_probe = std::cos(2.0 * M_PI * phi_probe);
+            const double sin_phi_probe = std::sin(2.0 * M_PI * phi_probe);
+            const double h_probe = CoM_height_avg - m_com_z_amplitude * cos_phi_probe;
+
+            constexpr double kHeightEps = 1e-2; // m
+            constexpr double kVelEpsSign = 1e-6; // m/s, sign only
+            const bool at_avg_climbing =
+                (std::abs(h_probe - CoM_height_avg) < kHeightEps) && (sin_phi_probe > kVelEpsSign);
+
+            if(current_amplitude_is_zero || at_avg_climbing)
+            {
+                m_com_z_amplitude = m_pending_perstep_amplitude;
+                m_perstep_params_pending = false;
+            }
+        }
+
         const double four_pi_sq = 4.0 * M_PI * M_PI;
 
-        // Local helper: given absolute-ish time-relative-to-now t_i, walk step index j (starting
-        // fresh each call, since fine-loop sample count differs from coarse) to find which step
-        // contains t_i, and return {height, zc_dot, zc_ddot} at that instant. Re-deriving j from
-        // scratch per sample (rather than incrementally across the whole loop, as the original
-        // coarse-only version did) is a deliberate correctness-over-micro-efficiency choice: the
-        // fine loop has n_fine (up to ~301) samples, and re-walking m_timestamp (size m_C, ~30)
-        // per sample is cheap relative to everything else this function does.
-        //
-        // zc_dot is now also closed-form: phi advances linearly in time within a step
-        // (dphi/dt = 1/T_j), so height(t) = avg - A*cos(2*pi*phi) differentiates to
-        // zc_dot = A*(2*pi/T_j)*sin(2*pi*phi), matching zc_ddot's existing omega_j = 2*pi/T_j
-        // convention. Both zc_dot and zc_ddot vanish at phi=0 and phi=1 (sin(0)=sin(2*pi)=0),
-        // so this stays well-behaved across step-boundary transitions despite T_j varying
-        // step-to-step (unlike Sine's fixed-period case).
         auto eval_at = [&](double t_i) -> std::tuple<double, double, double>
         {
             double t_start_j = -m_tk_within_step;
@@ -503,11 +624,6 @@ void ISMPC_Solver::init_MPC(const MPC_state & mpc_state, std::string Tail, int S
             return {height, zc_dot, zc_ddot};
         };
 
-        // UNCHANGED coarse loop, now calling eval_at() instead of inlining the walk --
-        // functionally identical to the original for each i, since the original also
-        // re-derives j/t_start_j incrementally starting from j=0 at the top of the
-        // switch-case (this is called once per init_MPC(), so j always starts at 0
-        // here regardless of restructuring).
         CoM_height_vel.resize(static_cast<size_t>(m_C));
         CoM_height_acc.resize(static_cast<size_t>(m_C));
         for(int i = 0; i < m_C; ++i)
@@ -521,9 +637,6 @@ void ISMPC_Solver::init_MPC(const MPC_state & mpc_state, std::string Tail, int S
             m_eta_free[i] = m_eta[i];
         }
 
-        // NEW: fine-resolution reference for task-target accessors only, now including the
-        // closed-form velocity feedforward (previously left at 0.0 -- see eval_at's comment
-        // above for the derivation).
         {
             const int N_fine = static_cast<int>(m_delta / m_delta_control);
             const size_t n_fine = static_cast<size_t>(m_C) * static_cast<size_t>(N_fine) + 1;
@@ -554,7 +667,7 @@ void ISMPC_Solver::init_MPC(const MPC_state & mpc_state, std::string Tail, int S
         m_eta_free[i] = m_eta[i];
       }
 
-      // NEW: fine-resolution reference for task-target accessors, same pattern as Sine's case.
+      // Fine-resolution reference for task-target accessors, same pattern as Sine's case.
       {
         const int N_fine = static_cast<int>(m_delta / m_delta_control);
         const size_t n_fine = static_cast<size_t>(m_C) * static_cast<size_t>(N_fine) + 1;
@@ -574,20 +687,59 @@ void ISMPC_Solver::init_MPC(const MPC_state & mpc_state, std::string Tail, int S
 
     case CoMHeightTestSignal::Sine:
     {
-        // Wall-clock sinusoid, decoupled from footstep phase (unlike PerStepCosine below), so the
-        // reference is a clean, uninterrupted sine usable for identification regardless of step
-        // timing/duration. z_c(t) = CoM_height_avg + A*sin(omega_test*t), with the analytically
-        // exact z_ddot fed forward.
+        // Phase is INTEGRATED tick-to-tick (m_sine_phase += omega*dt) rather than derived
+        // fresh from omega*t_global. This is what allows a live period (omega) change to take
+        // effect without retroactively altering the phase history, and lets a just-completed
+        // mode-switch splice (which sets m_sine_phase=0 above) stick cleanly rather than being
+        // immediately overwritten by an absolute-time formula.
+        //
+        // On first activation of Sine ever (construction), reset the phase origin cleanly so
+        // the reference starts at height == CoM_height_avg (sin(0)=0).
+        if(m_sine_last_t_global < 0.0)
+        {
+            m_sine_phase = 0.0;
+        }
+        else
+        {
+            const double omega_active = 2.0 * M_PI / std::max(m_com_z_test_period, 1e-6);
+            m_sine_phase += omega_active * (m_t_global - m_sine_last_t_global);
+        }
+        m_sine_last_t_global = m_t_global;
+
+        // Wrap into [0, 2*pi) purely for cleanliness; has no effect on sin()/cos() output.
+        m_sine_phase = std::fmod(m_sine_phase, 2.0 * M_PI);
+        if(m_sine_phase < 0.0) m_sine_phase += 2.0 * M_PI;
+
+        // Splice in any pending amplitude/period edit ONLY at a zero-crossing of the CURRENT
+        // (pre-edit) waveform, i.e. height == CoM_height_avg, climbing. If current amplitude
+        // is (near) zero, bypass immediately (no arch to protect continuity against).
+        if(m_sine_params_pending)
+        {
+            constexpr double kZeroAmplitudeEps = 1e-5;
+            const bool current_amplitude_is_zero = std::abs(m_com_z_amplitude) < kZeroAmplitudeEps;
+
+            constexpr double kZeroCrossEps = 5e-2; // rad
+            const bool near_zero_upward = (std::abs(std::sin(m_sine_phase)) < kZeroCrossEps)
+                                           && (std::cos(m_sine_phase) > 0.0);
+
+            if(current_amplitude_is_zero || near_zero_upward)
+            {
+                m_com_z_amplitude = m_pending_sine_amplitude;
+                m_com_z_test_period = m_pending_sine_period;
+                m_sine_params_pending = false;
+                m_sine_phase = 0.0;
+            }
+        }
+
         const double omega_test = 2.0 * M_PI / std::max(m_com_z_test_period, 1e-6);
+
         CoM_height_vel.resize(static_cast<size_t>(m_C));
         CoM_height_acc.resize(static_cast<size_t>(m_C));
         for(int i = 0; i < m_C; ++i)
         {
-            // UNCHANGED: coarse CoM_height, feeds m_eta/m_eta_free/Integrate().
-            const double t_i = m_t_global + static_cast<double>(i) * m_delta;
-            const double phase = omega_test * t_i;
-            const double sin_phase = std::sin(phase);
-            const double cos_phase = std::cos(phase);
+            const double phase_i = m_sine_phase + omega_test * static_cast<double>(i) * m_delta;
+            const double sin_phase = std::sin(phase_i);
+            const double cos_phase = std::cos(phase_i);
 
             CoM_height[i] = CoM_height_avg + m_com_z_amplitude * sin_phase;
             const double zc_dot = m_com_z_amplitude * omega_test * cos_phase;
@@ -599,8 +751,6 @@ void ISMPC_Solver::init_MPC(const MPC_state & mpc_state, std::string Tail, int S
             m_eta_free[i] = m_eta[i];
         }
 
-        // NEW: fine-resolution reference for task-target accessors only. See RlSine
-        // case above for the full rationale; identical pattern, this case's formula.
         {
             const int N_fine = static_cast<int>(m_delta / m_delta_control);
             const size_t n_fine = static_cast<size_t>(m_C) * static_cast<size_t>(N_fine) + 1;
@@ -609,10 +759,9 @@ void ISMPC_Solver::init_MPC(const MPC_state & mpc_state, std::string Tail, int S
             CoM_height_acc_fine.resize(n_fine);
             for(size_t idx = 0; idx < n_fine; ++idx)
             {
-                const double t_i = m_t_global + static_cast<double>(idx) * m_delta_control;
-                const double phase = omega_test * t_i;
-                const double sin_phase = std::sin(phase);
-                const double cos_phase = std::cos(phase);
+                const double phase_i = m_sine_phase + omega_test * static_cast<double>(idx) * m_delta_control;
+                const double sin_phase = std::sin(phase_i);
+                const double cos_phase = std::cos(phase_i);
 
                 CoM_height_fine[idx] = CoM_height_avg + m_com_z_amplitude * sin_phase;
                 CoM_height_vel_fine[idx] = m_com_z_amplitude * omega_test * cos_phase;
@@ -624,16 +773,12 @@ void ISMPC_Solver::init_MPC(const MPC_state & mpc_state, std::string Tail, int S
 
     case CoMHeightTestSignal::RlSine:
     {
-        // RL-driven sine, mirrors the Sine case above but reads the reference
-        // from SetCoMHeightSineParams() instead of the fixed test constants.
-        // The caller (mc_mjlab) is responsible for offset - amplitude >= 0.
+        // UNCHANGED -- RL-driven path, not modified by any of this thread's work.
         const double omega = 2.0 * M_PI * m_rl_com_z_frequency;
         CoM_height_vel.resize(static_cast<size_t>(m_C));
         CoM_height_acc.resize(static_cast<size_t>(m_C));
         for(int i = 0; i < m_C; ++i)
         {
-            // UNCHANGED: coarse CoM_height, feeds m_eta/m_eta_free/Integrate() exactly
-            // as before this change. Do not modify this loop's resolution or contents.
             const double t_i = m_t_global + static_cast<double>(i) * m_delta;
             const double phase = omega * t_i;
             const double sin_phase = std::sin(phase);
@@ -650,11 +795,6 @@ void ISMPC_Solver::init_MPC(const MPC_state & mpc_state, std::string Tail, int S
             m_eta_free[i] = m_eta[i];
         }
 
-        // NEW: fine-resolution (X_MPC-matching) reference, for MPC_state's task-
-        // target accessors only. Same closed-form sine as above, sampled at
-        // m_delta_control instead of m_delta. Does NOT feed m_eta, Integrate(),
-        // or Compute_Riccati_Kernel() -- those exclusively use CoM_height (coarse,
-        // above), untouched by this block.
         {
             const int N_fine = static_cast<int>(m_delta / m_delta_control);
             const size_t n_fine = static_cast<size_t>(m_C) * static_cast<size_t>(N_fine) + 1;

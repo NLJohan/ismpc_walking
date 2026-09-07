@@ -277,6 +277,11 @@ void Walking_controller::addToGUI()
       mc_rtc::gui::Label("Run Loop Processing Time (ms)", [this]() { return this->ControllerLoopTime; }),
       // mc_rtc::gui::Label("ZMP box range x",[this](){return this->MPCSolver.ZMP_dx;}),
       // mc_rtc::gui::Label("ZMP box range y",[this](){return this->MPCSolver.ZMP_dy;})
+      mc_rtc::gui::Label("CoM Height param change pending",
+                         [this]() -> std::string {
+                           return MPCSolver.HasPendingCoMHeightParams() ? "yes (applies at next zero-crossing / step)"
+                                                                         : "no";
+                         }),
       mc_rtc::gui::ComboInput(
         "CoM Height Signal", {"RL (default)", "Sine", "PerStepCosine", "Step"},
         [this]() { return ToString(MPCSolver.TestSignal()); },

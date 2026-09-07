@@ -450,7 +450,16 @@ public:
   }
 
   CoMHeightTestSignal TestSignal() const noexcept { return m_test_signal; }
-  void TestSignal(CoMHeightTestSignal s) noexcept { m_test_signal = s; }
+  void TestSignal(CoMHeightTestSignal s) noexcept
+  {
+      if(s == m_test_signal && !m_mode_switch_pending) return;
+      m_pending_test_signal = s;
+      m_mode_switch_pending = true;
+  }
+  bool HasPendingCoMHeightParams() const noexcept
+  {
+      return m_sine_params_pending || m_perstep_params_pending || m_mode_switch_pending;
+  }
   double GlobalTime() const noexcept { return m_t_global; }
   double CoMHeightAvg() const noexcept { return CoM_height_avg; }
   double CoMHeightAmplitude() const noexcept { return m_com_z_amplitude; }
@@ -460,14 +469,19 @@ public:
 
   void SetSineParams(double avg, double amplitude, double period) noexcept
   {
-    CoM_height_avg = avg; m_com_z_amplitude = amplitude; m_com_z_test_period = period;
-    m_com_height_avg_overridden_by_gui = true;
+      CoM_height_avg = avg; // offset: immediate, as before -- not queued
+      m_com_height_avg_overridden_by_gui = true;
+      m_pending_sine_amplitude = amplitude;
+      m_pending_sine_period = period;
+      m_sine_params_pending = true;
   }
 
   void SetPerStepCosineParams(double avg, double amplitude) noexcept
   {
-    CoM_height_avg = avg; m_com_z_amplitude = amplitude;
-    m_com_height_avg_overridden_by_gui = true;
+      CoM_height_avg = avg; // offset: immediate, as before -- not queued
+      m_com_height_avg_overridden_by_gui = true;
+      m_pending_perstep_amplitude = amplitude;
+      m_perstep_params_pending = true;
   }
 
   void SetStepParams(double before, double amplitude, double absolute_trigger_time) noexcept
@@ -816,6 +830,28 @@ private:
    */
   bool Slide_ZMP_region = false;
   bool m_com_height_avg_overridden_by_gui = false;
+  // --- Pending-parameter queue for glitch-free amplitude/period edits ---
+  // Offset (CoM_height_avg) is applied immediately elsewhere (unchanged).
+  // Amplitude/period edits are staged here and spliced in only at a zero-
+  // crossing / step-boundary "seam", so a live parameter change from the GUI
+  // never introduces a mid-arch discontinuity in the height reference itself.
+  bool m_sine_params_pending = false;
+  double m_pending_sine_amplitude = 0.0;
+  double m_pending_sine_period = 0.0;
+
+  bool m_perstep_params_pending = false;
+
+  CoMHeightTestSignal m_pending_test_signal = CoMHeightTestSignal::RlSine;
+  bool m_mode_switch_pending = false;
+
+  double m_pending_perstep_amplitude = 0.0;
+
+  // Persistent phase accumulator for Sine, integrated tick-to-tick instead of
+  // derived fresh from omega*t_global -- this is what makes a live omega change
+  // (period edit) not retroactively rewrite the phase history. Reset to 0 the
+  // first time Sine mode is (re)selected after being on a different mode.
+  double m_sine_phase = 0.0;
+  double m_sine_last_t_global = -1.0; // sentinel: -1 means "not yet initialized this activation"
 
   CoMHeightTestSignal m_test_signal = CoMHeightTestSignal::RlSine;
 
