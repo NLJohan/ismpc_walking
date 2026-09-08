@@ -188,6 +188,38 @@ inline bool ismpc_walking_set_policy_wants_walk(PyObject * py_ctl, bool enabled)
 }
 
 /**
+ * @brief Push the RL-commanded step timing (Ts, seconds between footsteps)
+ * into the running ISMPC walking controller. Read fresh every
+ * UpdatePlanner_input() call (no caching), so this can be set at any point
+ * mid-swing without needing to be sequenced around footstep boundaries --
+ * same timing contract as ismpc_walking_set_reference_velocity above.
+ * Clamped controller-side to controller_config_.ts_range via the existing
+ * ts(double) setter, so an out-of-range RL action is safely capped rather
+ * than passed straight through.
+ *
+ * @param py_ctl A Python mc_control.MCController object.
+ * @param ts     Desired time between steps (s).
+ * @return true if py_ctl was actually a Walking_controller and the call
+ *         landed, false otherwise (caller should treat false as "nothing
+ *         happened", not necessarily an error -- see notes in step_env).
+ */
+inline bool ismpc_walking_set_step_timing(PyObject * py_ctl, double ts)
+{
+  auto * ctl = ismpc_walking_unwrap_mc_controller(py_ctl);
+  if(ctl == nullptr)
+  {
+    return false;
+  }
+  auto * walking = dynamic_cast<Walking_controller *>(ctl);
+  if(walking == nullptr)
+  {
+    return false;
+  }
+  walking->SetPolicyStepTiming(ts);
+  return true;
+}
+
+/**
  * @brief Read back ISMPC's own safety opinion from the most recent MPC
  * solve -- true if ISMPC's internal logic would have stopped walking on
  * its own (excessive stability error, or QP failure), independent of

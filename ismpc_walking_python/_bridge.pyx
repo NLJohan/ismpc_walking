@@ -85,6 +85,25 @@ def set_policy_wants_walk(ctl, bint enabled):
   return ok
 
 
+def set_step_timing(ctl, double ts):
+  """Push the RL-commanded step timing (Ts, seconds between footsteps) into
+  the running ISMPC walking controller.
+
+  `ctl` should be an mc_control.MCController instance. Returns True if it
+  was actually a Walking_controller and the call landed, False otherwise
+  (e.g. wrong controller loaded -- caller should treat that as "nothing
+  happened", not as an error).
+
+  Safe to call mid-swing: Walking_controller::UpdatePlanner_input() reads
+  T_Steps fresh every call, there is no caching or sequencing requirement
+  around footstep boundaries -- same contract as set_reference_velocity.
+  Clamped controller-side to the configured ts_range regardless of what's
+  passed here.
+  """
+  cdef cppbool ok = c_bridge.ismpc_walking_set_step_timing(ctl, ts)
+  return ok
+
+
 def get_ismpc_wants_stop(ctl):
   """ISMPC's own safety opinion from the most recent MPC solve, or None
   if unavailable.

@@ -321,8 +321,23 @@ void Walking_controller::addToGUI()
       mc_rtc::gui::ArrayInput(
           "Reference velocity", {"x", "y", "omega"}, [this]() -> const Eigen::Vector3d & { return reference_velocity; },
           [this](const Eigen::Vector3d & vel) { reference_velocity = vel; }),
+      mc_rtc::gui::Checkbox(
+          "Ts Control Mode (RL)", [this]() { return policyControlsTs; },
+          [this]() { policyControlsTs = !policyControlsTs; }),
       mc_rtc::gui::NumberInput(
-          "Ts", [this]() -> double { return ts(); }, [this](const double t) { T_Steps = t; }),
+          "Ts", [this]() -> double { return ts(); },
+          [this](const double t) {
+            // Manual edits are silently ignored while the policy is in
+            // control (policyControlsTs, default true) -- this is the mode
+            // switch, not a race: with the checkbox on, this NumberInput's
+            // displayed value still updates live (its getter always reads
+            // ts()), it just cannot be written from here. Uncheck "Ts
+            // Control Mode (RL)" above to take manual control.
+            if(!policyControlsTs)
+            {
+              ts(t);
+            }
+          }),
       mc_rtc::gui::NumberInput(
           "Tds/Ts", [this]() -> double { return controller_config_.Double_Step_Ratio; },
           [this](const double t) { controller_config_.Double_Step_Ratio = t; }),

@@ -198,6 +198,7 @@ Walking_controller::Walking_controller(mc_rbdyn::RobotModulePtr rm,
 
   // Change to:
   autoStart = config("walking_controller")("auto_start")("activate");
+  UseStepRecovery = config("walking_controller")("UseStepRecovery");
   autoStartConfigured = autoStart;
   reference_velocity.setZero();
 
@@ -1250,6 +1251,20 @@ void Walking_controller::reset(const mc_control::ControllerResetData & reset_dat
   // reset elsewhere).
   reference_velocity.setZero();
   N_Steps = 0;
+
+  // T_Steps has the identical staleness concern as reference_velocity just
+  // above: it is a plain member, never zeroed/reset elsewhere, so without
+  // this it would carry over whichever value the PREVIOUS episode's policy
+  // (or a manual GUI edit) last left it at -- violating "every episode is
+  // independent" and, worse, seeding the very first post-reset
+  // UpdatePlanner_input() call with a step timing that has nothing to do
+  // with the freshly-reset state. Reset unconditionally here, regardless of
+  // policyControlsTs: the policy (if in control) will overwrite this via
+  // its next SetPolicyStepTiming() call anyway, same as reference_velocity
+  // gets overwritten by the next apply_actions() call; if in manual mode,
+  // resetting to the default is exactly the "independent episodes" behavior
+  // requested, and the GUI will show kDefaultTSteps immediately after.
+  T_Steps = kDefaultTSteps;
 
   if(autoStartConfigured)
   {

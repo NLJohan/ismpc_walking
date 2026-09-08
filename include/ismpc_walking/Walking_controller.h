@@ -280,6 +280,20 @@ public:
     Stop = !enabled;
   }
 
+  // Policy-driven step timing (see policyControlsTs's declaration for the
+  // full rationale). Reuses the existing ts(double) clamp verbatim, so
+  // RL-commanded values get the same controller_config_.ts_range safety
+  // bound manual GUI edits always had -- unlike SetPolicyWantsWalk, nothing
+  // here bypasses an existing safety mechanism. This setter is always live
+  // (mc_mjlab's bridge call is the only writer of the RL-side value);
+  // policyControlsTs itself is only consulted by the GUI's manual
+  // NumberInput, to decide whether ITS write is currently allowed to land
+  // -- see GUI.cpp.
+  void SetPolicyStepTiming(double t) noexcept
+  {
+    ts(t);
+  }
+
   // Read-only observation of ISMPC's own safety opinion this MPC solve --
   // see ismpc_wants_stop's declaration. Does NOT reflect the policy's
   // decision or the controller's actual walking state (Robot_Walking);
@@ -585,7 +599,12 @@ private:
   double t_contact = 0; // Time when foot hit the ground
   double mpc_thread_process_time = 0.0;
   double ControllerLoopTime = 0;
-  double T_Steps = 1.1;
+  // Default/reset value for T_Steps -- every episode starts here regardless
+  // of policyControlsTs, so episodes are independent of whatever the
+  // previous episode's policy (or a manual GUI edit) last left T_Steps at.
+  // See reset()'s tail, which re-applies this every call.
+  static constexpr double kDefaultTSteps = 1.1;
+  double T_Steps = kDefaultTSteps;
   double prevStepTiming = 0;
   double K_feedback = 1;
 
@@ -660,6 +679,19 @@ private:
   // explicitly requests walking -- no hardcoded floor beyond that single
   // default; the policy may request walking on tick 0 if it chooses to.
   bool policyWantsWalk = false;
+
+  // Policy-controlled step-timing gate, same shape as policyWantsWalk above
+  // but WITHOUT the "policy has unconditional authority" property: this
+  // flag does not gate SetPolicyStepTiming() itself (that setter is always
+  // live), it only gates the GUI's manual "Ts" NumberInput (see GUI.cpp),
+  // so a human can't silently fight the policy's writes tick-to-tick, and
+  // can deliberately opt back into manual control for testing. Defaults to
+  // true (RL controls Ts out of the box, matching training's normal
+  // configuration); manual mode is an explicit opt-in via the GUI
+  // checkbox. Unlike T_Steps itself, this flag is NOT reset every episode
+  // -- it is a launch-mode/session-level choice (training vs manual
+  // testing), not per-episode state.
+  bool policyControlsTs = true;
 
   // ISMPC's OWN safety opinion, read-only/informational: set true whenever
   // ISMPC's internal logic would have stopped walking on its own this MPC

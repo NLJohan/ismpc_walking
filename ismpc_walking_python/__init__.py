@@ -6,6 +6,7 @@ from ._bridge import (
   set_com_height_sine_params,
   set_policy_wants_walk,
   set_reference_velocity,
+  set_step_timing,
 )
 
 __all__ = [
@@ -16,4 +17,5 @@ __all__ = [
   "set_com_height_sine_params",
   "set_policy_wants_walk",
   "set_reference_velocity",
+  "set_step_timing",
 ]
