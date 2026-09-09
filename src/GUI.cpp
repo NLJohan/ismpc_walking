@@ -513,7 +513,7 @@ void Walking_controller::addToGUI()
                                 mc_rtc::gui::plot::X(
                                     "t", [this]() { return static_cast<double>(count) * controller_timestep; }),
                                 mc_rtc::gui::plot::Y(
-                                    "u", [this]() { return admittanceTarget.x(); }, mc_rtc::gui::Color::Red),
+                                    "u", [this]() { return zmp_ref_logged.x(); }, mc_rtc::gui::Color::Red),
                                 mc_rtc::gui::plot::Y(
                                     "mpc zmp ref", [this]() { return mpc_state_.ref_zmp_.x(); },
                                     mc_rtc::gui::Color::Green, mc_rtc::gui::plot::Style::Solid),
@@ -537,7 +537,7 @@ void Walking_controller::addToGUI()
                                 mc_rtc::gui::plot::X(
                                     "t", [this]() { return static_cast<double>(count) * controller_timestep; }),
                                 mc_rtc::gui::plot::Y(
-                                    "u", [this]() { return admittanceTarget.y(); }, mc_rtc::gui::Color::Red),
+                                    "u", [this]() { return zmp_ref_logged.y(); }, mc_rtc::gui::Color::Red),
                                 mc_rtc::gui::plot::Y(
                                     "mpc zmp ref", [this]() { return mpc_state_.ref_zmp_.y(); },
                                     mc_rtc::gui::Color::Green, mc_rtc::gui::plot::Style::Solid),

@@ -861,6 +861,15 @@ void Walking_controller::MoveCoM()
   admittanceTarget = mpc_state_.delayed_zmp_ + mpc_state_.get_u(0);
   admittanceTarget.z() = 0;
 
+  if((t - t_k) < controller_config_.zmp_delay + controller_config_.controller_timestep)
+  {
+    zmp_ref_logged = MPCSolver.Uk();
+  }
+  else
+  {
+    zmp_ref_logged = admittanceTarget;
+  }
+
   if(doubleSupport_state && updateAdmittance && mpc_state_.get_tds() - t_k > 0
      && mpc_state_.zmp_references().size() != 0)
   {

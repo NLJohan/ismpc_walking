@@ -523,6 +523,8 @@ private:
   bool stabilizer_active_ = true;
   std::thread walkingTrajectoryThread;
 
+  Eigen::Vector3d zmp_ref_logged = Eigen::Vector3d::Zero();
+
   Eigen::Vector3d dcmTarget = Eigen::Vector3d::Zero();
   Eigen::Vector3d dcmMeasured = Eigen::Vector3d::Zero();
   Eigen::Vector3d zmpCorr = Eigen::Vector3d::Zero();
