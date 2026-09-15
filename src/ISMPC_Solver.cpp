@@ -858,6 +858,12 @@ void ISMPC_Solver::compute_dcm(Eigen::MatrixXd & A_out,
   double cum_sum = 0.0;
   for (int k = 0; k < indx; ++k)
   {
+    if(k >= static_cast<int>(m_eta.size()))
+    {
+      std::cout << "[GWP-TRACE] CD-OOB-eta k=" << k << " m_eta.size()=" << m_eta.size()
+                << " indx=" << indx << " -- WOULD READ OOB, BREAKING" << std::endl << std::flush;
+      break;
+    }
     cum_sum += m_eta[k];
     integrated_eta_to[k + 1] = cum_sum * m_delta;
   }
@@ -880,7 +886,6 @@ void ISMPC_Solver::compute_dcm(Eigen::MatrixXd & A_out,
 
   // 2. Compute b_out using time-varying exponential terms
   b_out = dcm_delay;
-  
   const double exp_neg_eta_tp = std::exp(-eta_0 * tp);
   const double exp_neg_eta_tj = 1.0 / exp_eta_tj; // Reciprocal optimization
 
@@ -888,10 +893,18 @@ void ISMPC_Solver::compute_dcm(Eigen::MatrixXd & A_out,
   b_out += w_k.head<2>() * (1.0 - exp_neg_eta_tp) + w_k_inf.head<2>() * exp_neg_eta_tp;
   b_out *= exp_eta_tj;
 
-  // 3. Dense Matrix loop over the prediction steps
+  std::cout << "[GWP-TRACE] CD-01 pre-loop indx=" << indx << " p=" << p << " b_out.hasNaN="
+            << b_out.hasNaN() << std::endl << std::flush;
+
   for(int i = 0; i < indx; ++i)
   {
-    // Use cached values to avoid redundant exponential evaluations
+    if(i >= static_cast<int>(m_eta.size()) || (i + 1) >= static_cast<int>(integrated_eta_to.size()))
+    {
+      std::cout << "[GWP-TRACE] CD-OOB-loop i=" << i << " m_eta.size()=" << m_eta.size()
+                << " integrated_eta_to.size()=" << integrated_eta_to.size()
+                << " -- WOULD READ OOB, BREAKING" << std::endl << std::flush;
+      break;
+    }
     const double exp_neg_eta_ti = std::exp(-integrated_eta_to[i]);
     const double exp_neg_eta_tp_minus_ti = std::exp(-eta_0 * std::max(0.0, tp - (i * m_delta)));
     const double exp_neg_eta_tj_minus_ti = std::exp(-(integrated_eta_to[indx] - integrated_eta_to[i]));
@@ -913,24 +926,42 @@ void ISMPC_Solver::compute_dcm(Eigen::MatrixXd & A_out,
     }
 
     const double scaled_factor = exp_neg_eta_ti * factor;
-    auto block_2x2 = A_out.block<2, 2>(0, 2 * i);
-    block_2x2(0, 0) = scaled_factor;
-    block_2x2(1, 1) = scaled_factor;
+
+    const int col_a = 2 * i;
+    if(col_a + 2 > A_out.cols())
+    {
+      std::cout << "[GWP-TRACE] CD-OOB-blockA i=" << i << " col_a=" << col_a
+                << " A_out.cols()=" << A_out.cols() << " -- WOULD OVERFLOW, SKIPPING"
+                << std::endl << std::flush;
+    }
+    else
+    {
+      auto block_2x2 = A_out.block<2, 2>(0, col_a);
+      block_2x2(0, 0) = scaled_factor;
+      block_2x2(1, 1) = scaled_factor;
+    }
 
     if(UseAngularMomentumDot)
     {
-      // Use time-varying CoM height and eta at step i
       const double eta_i = m_eta[i];
       const double exp_neg_eta_ti_plus_1 = std::exp(-integrated_eta_to[i + 1]);
-      
       double am_factor = (exp_neg_eta_ti - exp_neg_eta_ti_plus_1) / (m_mass * CoM_height[i] * eta_i * eta_i);
-      
-      // Fast block assignment using fixed sizes
-      A_out.block<2, 2>(0, 2 * (m_C + j_Max_C + i)) << 0.0, -am_factor, am_factor, 0.0;
+      const int col_b = 2 * (m_C + j_Max_C + i);
+      if(col_b + 2 > A_out.cols())
+      {
+        std::cout << "[GWP-TRACE] CD-OOB-blockB i=" << i << " col_b=" << col_b
+                  << " A_out.cols()=" << A_out.cols() << " -- WOULD OVERFLOW, SKIPPING"
+                  << std::endl << std::flush;
+      }
+      else
+      {
+        A_out.block<2, 2>(0, col_b) << 0.0, -am_factor, am_factor, 0.0;
+      }
     }
   }
 
   A_out *= exp_eta_tj;
+  std::cout << "[GWP-TRACE] CD-02 LEAVE A_out.hasNaN=" << A_out.hasNaN() << std::endl << std::flush;
 }
 
 void ISMPC_Solver::create_dcm_cost_function(Eigen::MatrixXd & M_dcm,
@@ -1614,6 +1645,15 @@ void ISMPC_Solver::ZMP_Constraints()
 
       ZMP_ref_traj.push_back(-P_z_k_delayed.x() + (rect_offset_support + zmp_ref_offset_sg).x());
       ZMP_ref_traj.push_back(-P_z_k_delayed.y() + (rect_offset_support + zmp_ref_offset_sg).y());
+      const int col_offset_a = 2 * m_C + 2 * (j_f - 1);
+      const int col_offset_b = 2 * m_C + 2 * (j_fm1 - 1);
+      if(col_offset_a + 2 > N_variable || col_offset_b + 2 > N_variable)
+      {
+        std::cout << "[GWP-TRACE] ZMPC-OOB i=" << i << " j_f=" << j_f << " j_fm1=" << j_fm1
+                  << " j_Max_C=" << j_Max_C << " N_variable=" << N_variable
+                  << " col_offset_a=" << col_offset_a << " col_offset_b=" << col_offset_b
+                  << " -- WOULD OVERFLOW, SKIPPING WRITE" << std::endl << std::flush;
+      }
 
       Delta.block<2, 2>(2 * i, 2 * m_C + 2 * (j_f - 1)).setIdentity();
       Delta.block<2, 2>(2 * i, 2 * m_C + 2 * (j_f - 1)) *= -alpha;
@@ -1629,33 +1669,45 @@ void ISMPC_Solver::ZMP_Constraints()
     }
     else
     {
-      ZMP_ref_traj.push_back(-P_z_k_delayed.x() + (rect_offset_support + zmp_ref_offset_sg).x());
-      ZMP_ref_traj.push_back(-P_z_k_delayed.y() + (rect_offset_support + zmp_ref_offset_sg).y());
-
-      zmp_cstr_polygons.push_back(Poly_Rect);
-      u_cstr_polygons.push_back(Poly_Rect_u);
-
-      Eigen::MatrixX2d normals(zmp_cstr_polygons.back().normals());
-      Eigen::VectorXd offsets(zmp_cstr_polygons.back().offsets());
-
-      b_zmp_ineq.push_back(offsets - normals * P_z_k_delayed_2d
-                           + normals * ((rect_offset_support).head<2>()) * alpha
-                           + normals * ((rect_offset_swing).head<2>()) * (1.0 - alpha));
-
-      b_u_ineq.push_back(u_cstr_polygons.back().offsets() - u_cstr_polygons.back().normals() * P_z_k_delayed_2d);
-
-      Delta.block<2, 2>(2 * i, 2 * m_C + 2 * (j_f - 1)).setIdentity();
-      Delta.block<2, 2>(2 * i, 2 * m_C + 2 * (j_f - 1)) *= -alpha;
-
-      Delta.block<2, 2>(2 * i, 2 * m_C + 2 * (j_fm1 - 1)).setIdentity();
-      Delta.block<2, 2>(2 * i, 2 * m_C + 2 * (j_fm1 - 1)) *= -(1.0 - alpha);
-
-      Delta_zmp_ref.block<2, 2>(2 * i, 2 * m_C + 2 * (j_f - 1)).setIdentity();
-      Delta_zmp_ref.block<2, 2>(2 * i, 2 * m_C + 2 * (j_f - 1)) *= -1.0;
-
-      if(i == 0)
+      const int col_offset_a = 2 * m_C + 2 * (j_f - 1);
+      const int col_offset_b = 2 * m_C + 2 * (j_fm1 - 1);
+      if(col_offset_a + 2 > N_variable || col_offset_b + 2 > N_variable)
       {
-        SuppPolyCorners = zmp_cstr_polygons[i].Get_Polygone_Corners();
+        std::cout << "[GWP-TRACE] ZMPC-OOB i=" << i << " j_f=" << j_f << " j_fm1=" << j_fm1
+                  << " j_Max_C=" << j_Max_C << " N_variable=" << N_variable
+                  << " col_offset_a=" << col_offset_a << " col_offset_b=" << col_offset_b
+                  << " -- WOULD OVERFLOW, SKIPPING WRITE" << std::endl << std::flush;
+      }
+      else
+      {
+        ZMP_ref_traj.push_back(-P_z_k_delayed.x() + (rect_offset_support + zmp_ref_offset_sg).x());
+        ZMP_ref_traj.push_back(-P_z_k_delayed.y() + (rect_offset_support + zmp_ref_offset_sg).y());
+
+        zmp_cstr_polygons.push_back(Poly_Rect);
+        u_cstr_polygons.push_back(Poly_Rect_u);
+
+        Eigen::MatrixX2d normals(zmp_cstr_polygons.back().normals());
+        Eigen::VectorXd offsets(zmp_cstr_polygons.back().offsets());
+
+        b_zmp_ineq.push_back(offsets - normals * P_z_k_delayed_2d
+                            + normals * ((rect_offset_support).head<2>()) * alpha
+                            + normals * ((rect_offset_swing).head<2>()) * (1.0 - alpha));
+
+        b_u_ineq.push_back(u_cstr_polygons.back().offsets() - u_cstr_polygons.back().normals() * P_z_k_delayed_2d);
+
+        Delta.block<2, 2>(2 * i, col_offset_a).setIdentity();
+        Delta.block<2, 2>(2 * i, col_offset_a) *= -alpha;
+
+        Delta.block<2, 2>(2 * i, col_offset_b).setIdentity();
+        Delta.block<2, 2>(2 * i, col_offset_b) *= -(1.0 - alpha);
+
+        Delta_zmp_ref.block<2, 2>(2 * i, col_offset_a).setIdentity();
+        Delta_zmp_ref.block<2, 2>(2 * i, col_offset_a) *= -1.0;
+
+        if(i == 0)
+        {
+          SuppPolyCorners = zmp_cstr_polygons[i].Get_Polygone_Corners();
+        }
       }
     }
 
@@ -1921,11 +1973,21 @@ void ISMPC_Solver::Compute_Riccati_Kernel()
     m_B_cum[idx] = m_B_cum[idx - 1] + 0.5 * (m_beta[idx - 1] + m_beta[idx]) * h;
     m_K_kernel[idx] = m_beta[idx] * std::exp(-m_B_cum[idx]);
   }
+  std::cout << "[GWP-TRACE] CRK-01 LEAVE m_K_kernel.size()=" << m_K_kernel.size()
+            << " m_Omega.size()=" << m_Omega.size() << std::endl << std::flush;
 }
 
 void ISMPC_Solver::Compute_Hk_And_bfree(Eigen::VectorXd & H_k_out, Eigen::Vector2d & b_free_out)
 {
   const int N_fine = m_C * m_riccati_substeps;
+  std::cout << "[GWP-TRACE] CHB-00 ENTER m_C=" << m_C << " m_riccati_substeps=" << m_riccati_substeps
+            << " N_fine=" << N_fine << " m_K_kernel.size()=" << m_K_kernel.size()
+            << " (need >= " << (N_fine+1) << ")" << std::endl << std::flush;
+  if(static_cast<int>(m_K_kernel.size()) < N_fine + 1)
+  {
+    std::cout << "[GWP-TRACE] CHB-OOB m_K_kernel TOO SMALL, size()=" << m_K_kernel.size()
+              << " need=" << (N_fine+1) << " -- THIS WILL READ OOB BELOW" << std::endl << std::flush;
+  }
   const double h = m_riccati_dt;
   const double a_inf = g / CoM_height_avg;
   const double eta_inf = std::sqrt(a_inf);
@@ -2221,6 +2283,7 @@ void ISMPC_Solver::Integrate()
 {
   m_X_MPC.clear();
   m_Y_MPC.clear();
+  m_zmp_ref_debug.clear();
   int N = (int)(m_delta / m_delta_control);
   int N_delay = static_cast<int>(m_delay_elapsed / m_delta_control);
 
@@ -2235,13 +2298,14 @@ void ISMPC_Solver::Integrate()
 
   m_X_MPC.push_back(Eigen::Vector3d{state_x.x(), state_x.y(), P_z_k.x()});
   m_Y_MPC.push_back(Eigen::Vector3d{state_y.x(), state_y.y(), P_z_k.y()});
+  m_zmp_ref_debug.push_back(Eigen::Vector3d{m_prev_admittance_target.x(), m_prev_admittance_target.y(), 0.0});
 
   Eigen::Vector2d Lc_dot_comp;
   Lc_dot_comp << -m_Ldot_c(m_C), m_Ldot_c(0);
   Lc_dot_comp /= (m_mass * std::pow(eta, 2) * CoM_height[0]);
 
   Eigen::Vector2d Pzi = (kappa * P_z_k.head<2>() - w - Lc_dot_comp);
-  Eigen::Vector2d zmp_ref = kappa * U_k.head<2>() - w - Lc_dot_comp;
+  Eigen::Vector2d zmp_ref = kappa * m_prev_admittance_target - w - Lc_dot_comp;
 
   // Time-Varying Fix: the homogeneous propagation matrix Integration_Mat must reflect the eta
   // applicable to *this* sub-stepping window. It was previously left stale from construction time
@@ -2261,9 +2325,12 @@ void ISMPC_Solver::Integrate()
 
     m_X_MPC.push_back(Eigen::Vector3d{state_x.x(), state_x.y(), (zmp + w + Lc_dot_comp).x() / kappa});
     m_Y_MPC.push_back(Eigen::Vector3d{state_y.x(), state_y.y(), (zmp + w + Lc_dot_comp).y() / kappa});
+    // Block A's asymptote in physical ZMP space, same transform as X_MPC/Y_MPC's own zmp column
+    m_zmp_ref_debug.push_back(Eigen::Vector3d{(zmp_ref + w + Lc_dot_comp).x() / kappa,
+                                              (zmp_ref + w + Lc_dot_comp).y() / kappa, 0.0});
   }
 
-  zmp_ref = kappa * P_z_k_delayed.head<2>() - w;
+  zmp_ref = kappa * P_z_k.head<2>() - w - Lc_dot_comp;
 
   m_admittance_targets.clear();
   for(Eigen::Index i = 0; i < m_C; i++)
@@ -2294,6 +2361,10 @@ void ISMPC_Solver::Integrate()
     Pzi = (Eigen::Vector2d{m_X_MPC.back()[2], m_Y_MPC.back()[2]} * kappa - w - Lc_dot_comp);
 
     m_admittance_targets.push_back(Eigen::Vector3d{(zmp_ref + w + Lc_dot_comp).x(), (zmp_ref + w + Lc_dot_comp).y(), 0.0} / kappa);
+    if(i == 0)
+    {
+      m_prev_admittance_target = m_admittance_targets.back().head<2>();
+    }
 
     for(int k = 0; k < N; k++)
     {
@@ -2307,6 +2378,9 @@ void ISMPC_Solver::Integrate()
 
       m_X_MPC.push_back(Eigen::Vector3d{state_x.x(), state_x.y(), (zmp + w + Lc_dot_comp).x() / kappa});
       m_Y_MPC.push_back(Eigen::Vector3d{state_y.x(), state_y.y(), (zmp + w + Lc_dot_comp).y() / kappa});
+      // Same zmp_ref, same transform, pushed once per fine sample -- identical indexing to X_MPC/Y_MPC
+      m_zmp_ref_debug.push_back(Eigen::Vector3d{(zmp_ref + w + Lc_dot_comp).x() / kappa,
+                                                (zmp_ref + w + Lc_dot_comp).y() / kappa, 0.0});
     }
     zmp_ref += Lc_dot_comp;
   }
@@ -2330,6 +2404,8 @@ bool ISMPC_Solver::GetWalkingParameters(bool stop)
       m_feas_res = m_feasibilitySolver.solve(m_tk, m_t_lift, DoubleSupport, P_u_k.head<2>(), P_z_k.head<2>(),
                                              m_support_foot, X_0_support_foot, X_0_swing_foot_initial, m_input_Tds,
                                              input_steps_, m_timestamp, w_k_inf.head<2>(), m_kappa_inf);
+      std::cout << "[GWP-TRACE] 01 after feasibilitySolver.solve() m_feas_res=" << m_feas_res
+                << " m_timestamp.size()=" << m_timestamp.size() << std::endl << std::flush;
     }
 
     std::vector<double> optimalTs = m_feasibilitySolver.get_optimal_steps_timings();
@@ -2382,20 +2458,27 @@ bool ISMPC_Solver::GetWalkingParameters(bool stop)
 
   double tc = m_tk + m_Tc;
   size_t tstep_indx = 0;
-
   j_Max_C = 0;
   if(!m_timestamp.empty())
   {
-    while(tc > m_timestamp[tstep_indx])
+    while(tstep_indx < m_timestamp.size() && tc > m_timestamp[tstep_indx])
     {
       tstep_indx += 1;
-      if(tstep_indx > m_timestamp.size())
-      {
-        break;
-      }
     }
   }
-  j_Max_C = static_cast<int>(tstep_indx);
+    j_Max_C = static_cast<int>(tstep_indx);
+
+  // SAFETY: j_Max_C indexes into input_steps_ below; input_steps_ and
+  // m_timestamp are assigned independently and nothing enforces equal length.
+  if(j_Max_C > static_cast<int>(input_steps_.size()))
+  {
+    std::cout << "[GWP-TRACE] 03-CLAMP j_Max_C=" << j_Max_C << " > input_steps_.size()="
+              << input_steps_.size() << " -- CLAMPING" << std::endl << std::flush;
+    j_Max_C = static_cast<int>(input_steps_.size());
+  }
+  std::cout << "[GWP-TRACE] 03 tstep_indx=" << tstep_indx << " j_Max_C=" << j_Max_C
+            << " m_C=" << m_C << " input_steps_.size()=" << input_steps_.size()
+            << " m_timestamp.size()=" << m_timestamp.size() << std::endl << std::flush;
   j_f = 0;
   j_fm1 = j_f - 1;
 
@@ -2404,6 +2487,8 @@ bool ISMPC_Solver::GetWalkingParameters(bool stop)
   {
     N_variable += 2 * m_C;
   }
+  std::cout << "[GWP-TRACE] 04 N_variable=" << N_variable << " UseAngularMomentumDot=" << UseAngularMomentumDot
+            << std::endl << std::flush;
 
   m_D = static_cast<int>(m_Tds / m_delta) - Tds_offset;
   count_Dstep = (std::min((m_tk / m_delta), static_cast<double>(m_D)));
@@ -2423,33 +2508,47 @@ bool ISMPC_Solver::GetWalkingParameters(bool stop)
     w_k = w_k_inf;
   }
 
+  std::cout << "[GWP-TRACE] 05 pre-ZMP-branch m_stop=" << m_stop << std::endl << std::flush;
   if(m_stop)
   {
     beta_dcm = m_Beta_dcm_stop;
     beta_dcm_vel = m_Beta_dcm_vel_stop;
     beta_zmp_traj = m_Beta_zmp_traj_stop;
     Static_ZMP_Constraints();
+    std::cout << "[GWP-TRACE] 06 post-Static_ZMP_Constraints" << std::endl << std::flush;
     if(UsePendulumSolver)
     {
       m_feasibility_standing_region = SupportPolygon(m_feasibilitySolver.get_feasibility_region());
       m_feasibility_standing_region_swing =
           SupportPolygon(m_feasibilitySolver.get_feasibility_region(X_0_swing_foot_initial, X_0_support_foot));
     }
+    std::cout << "[GWP-TRACE] 07 post-standing-region" << std::endl << std::flush;
   }
   else
   {
     ZMP_Constraints();
+    std::cout << "[GWP-TRACE] 08 post-ZMP_Constraints A_zmp.rows()=" << A_zmp.rows()
+              << " A_zmp.cols()=" << A_zmp.cols() << " Aineq_zmp.rows()=" << Aineq_zmp.rows()
+              << std::endl << std::flush;
   }
 
   FootSteps_Constraints();
+  std::cout << "[GWP-TRACE] 09 post-FootSteps_Constraints Aineq_steps.rows()=" << Aineq_steps.rows()
+            << " Aineq_steps.cols()=" << Aineq_steps.cols() << std::endl << std::flush;
   Stability_Constraints();
+  std::cout << "[GWP-TRACE] 10 post-Stability_Constraints A_stab.rows()=" << A_stab.rows()
+            << " A_stab.cols()=" << A_stab.cols() << std::endl << std::flush;
   Compute_Stability_Range();
+  std::cout << "[GWP-TRACE] 11 post-Compute_Stability_Range" << std::endl << std::flush;
 
   if(!ComputeTrajectory)
   {
+    std::cout << "[GWP-TRACE] 12 LEAVE (!ComputeTrajectory) returning false" << std::endl << std::flush;
     return false;
   }
 
+  std::cout << "[GWP-TRACE] 13 pre-M_zmp_vel A_zmp.rows()=" << A_zmp.rows() << " A_zmp.cols()=" << A_zmp.cols()
+            << " m_C=" << m_C << std::endl << std::flush;
   Eigen::MatrixXd M_zmp_vel = -m_lambda * A_zmp;
   Eigen::VectorXd b_zmp_vel = Eigen::VectorXd::Zero(M_zmp_vel.rows());
   for(int i = 0; i < m_C; i++)
@@ -2459,6 +2558,7 @@ bool ISMPC_Solver::GetWalkingParameters(bool stop)
       M_zmp_vel.block<2, 2>(2 * i, 2 * j) += m_lambda * Eigen::Matrix2d::Identity();
     }
   }
+  std::cout << "[GWP-TRACE] 14 post-M_zmp_vel loop" << std::endl << std::flush;
 
   Eigen::MatrixXd M_dcm = Eigen::MatrixXd::Zero(0, N_variable);
   Eigen::VectorXd b_dcm = Eigen::VectorXd::Zero(0);
@@ -2467,7 +2567,12 @@ bool ISMPC_Solver::GetWalkingParameters(bool stop)
   Eigen::VectorXd b_refDcm_zmp_traj = Eigen::VectorXd::Zero(0);
   Eigen::MatrixXd M_refDcm_zmp_traj = Eigen::MatrixXd::Zero(0, N_variable);
 
+  std::cout << "[GWP-TRACE] 15 pre-create_dcm_cost_function N_variable=" << N_variable
+            << std::endl << std::flush;
   create_dcm_cost_function(M_dcm, b_dcm, M_dcm_traj, b_dcm_traj, M_refDcm_zmp_traj, b_refDcm_zmp_traj);
+  std::cout << "[GWP-TRACE] 16 post-create_dcm_cost_function M_dcm.rows()=" << M_dcm.rows()
+            << " M_dcm.cols()=" << M_dcm.cols() << " M_dcm_traj.rows()=" << M_dcm_traj.rows()
+            << " M_dcm_traj.cols()=" << M_dcm_traj.cols() << std::endl << std::flush;
 
   // Time-Varying Fix: Extract current initial step eta for system matrix calculations
   const double eta_0 = m_eta[0];
@@ -2485,6 +2590,8 @@ bool ISMPC_Solver::GetWalkingParameters(bool stop)
   Eigen::MatrixXd M_dcmVelRef = eta_0 * (M_dcm_traj - M_refDcm_zmp_traj);
   Eigen::VectorXd b_dcmVelRef = eta_0 * (b_dcm_traj - b_refDcm_zmp_traj);
 
+    std::cout << "[GWP-TRACE] 17 pre-M_steps j_Max_C=" << j_Max_C << " input_steps_.size()="
+            << input_steps_.size() << std::endl << std::flush;
   Eigen::MatrixXd M_steps = Eigen::MatrixXd::Zero(2, N_variable);
   if(j_Max_C != 0)
   {
@@ -2501,9 +2608,19 @@ bool ISMPC_Solver::GetWalkingParameters(bool stop)
     M_stepsDelta.block(0, 2 * m_C, 2 * (j_Max_C - 1), 2 * (j_Max_C - 1)) =
         Eigen::MatrixXd::Identity(2 * (j_Max_C - 1), 2 * (j_Max_C - 1));
   }
+  std::cout << "[GWP-TRACE] 18 pre-input_steps_ loop j_Max_C=" << j_Max_C
+            << " input_steps_.size()=" << input_steps_.size() << std::endl << std::flush;
 
   for(int i = 0; i < j_Max_C; i++)
   {
+    if(static_cast<size_t>(i) >= input_steps_.size() ||
+       (i < j_Max_C - 1 && static_cast<size_t>(i + 1) >= input_steps_.size()))
+    {
+      std::cout << "[GWP-TRACE] 18-OOB WOULD READ input_steps_[" << i << "] or [" << (i + 1)
+                << "] but input_steps_.size()=" << input_steps_.size() << " -- SKIPPING"
+                << std::endl << std::flush;
+      continue;
+    }
     if(i == 0)
     {
       b_steps.head<2>() = input_steps_[i].translation().head<2>();
@@ -2514,12 +2631,26 @@ bool ISMPC_Solver::GetWalkingParameters(bool stop)
       b_stepsDelta.segment<2>(2 * i) = (input_steps_[i].translation() - input_steps_[i + 1].translation()).head<2>();
     }
   }
+  std::cout << "[GWP-TRACE] 19 post-input_steps_ loop" << std::endl << std::flush;
 
+  std::cout << "[GWP-TRACE] 20 pre-m_Q assembly N_variable=" << N_variable
+            << " M_zmp_vel(" << M_zmp_vel.rows() << "," << M_zmp_vel.cols() << ") hasNaN=" << M_zmp_vel.hasNaN()
+            << " M_stepsDelta(" << M_stepsDelta.rows() << "," << M_stepsDelta.cols() << ") hasNaN=" << M_stepsDelta.hasNaN()
+            << " M_steps(" << M_steps.rows() << "," << M_steps.cols() << ") hasNaN=" << M_steps.hasNaN()
+            << " M_zmp_traj(" << M_zmp_traj.rows() << "," << M_zmp_traj.cols() << ") hasNaN=" << M_zmp_traj.hasNaN()
+            << " M_dcm(" << M_dcm.rows() << "," << M_dcm.cols() << ") hasNaN=" << M_dcm.hasNaN()
+            << " M_dcm_traj(" << M_dcm_traj.rows() << "," << M_dcm_traj.cols() << ") hasNaN=" << M_dcm_traj.hasNaN()
+            << " M_dcmVel(" << M_dcmVel.rows() << "," << M_dcmVel.cols() << ") hasNaN=" << M_dcmVel.hasNaN()
+            << " M_dcmVelRef(" << M_dcmVelRef.rows() << "," << M_dcmVelRef.cols() << ") hasNaN=" << M_dcmVelRef.hasNaN()
+            << " A_zmp.hasNaN=" << A_zmp.hasNaN()
+            << std::endl << std::flush;
   m_Q = Eigen::MatrixXd::Identity(N_variable, N_variable) * 1e-12 + m_Beta_zmp_vel * (M_zmp_vel.transpose() * M_zmp_vel)
         + m_Beta_step * (M_stepsDelta.transpose() * M_stepsDelta) + m_Beta_step * (M_steps.transpose() * M_steps)
         + beta_zmp_traj * (M_zmp_traj.transpose() * M_zmp_traj)
         + beta_dcm * (M_dcm - M_dcm_traj).transpose() * (M_dcm - M_dcm_traj)
         + beta_dcm_vel * (M_dcmVel - M_dcmVelRef).transpose() * (M_dcmVel - M_dcmVelRef);
+  std::cout << "[GWP-TRACE] 21 post-m_Q m_Q(" << m_Q.rows() << "," << m_Q.cols() << ")"
+            << " hasNaN=" << m_Q.hasNaN() << std::endl << std::flush;
 
   m_p = m_Beta_zmp_vel * (M_zmp_vel.transpose() * b_zmp_vel) + m_Beta_step * (-M_stepsDelta.transpose() * b_stepsDelta)
         + m_Beta_step * (-M_steps.transpose() * b_steps) + beta_zmp_traj * (-M_zmp_traj.transpose() * b_zmp_traj)
@@ -2542,10 +2673,23 @@ bool ISMPC_Solver::GetWalkingParameters(bool stop)
 
   if(m_timestamp[0] - m_tk < 0.3)
   {
-    Aeq.block<2, 2>(2, 2 * m_C).setIdentity();
-    beq.segment<2>(2) = X_0_swing_foot_target.translation().head<2>();
-    Aineq_steps.block(0, 0, 4, N_variable).setZero();
-    bineq_steps.head<4>().setZero();
+    std::cout << "[GWP-TRACE] 21a ENTER swing-target-block m_timestamp[0]=" << m_timestamp[0]
+              << " m_tk=" << m_tk << " Aineq_steps.rows()=" << Aineq_steps.rows()
+              << " Aineq_steps.cols()=" << Aineq_steps.cols() << " N_variable=" << N_variable
+              << std::endl << std::flush;
+    if(Aineq_steps.rows() < 4)
+    {
+      std::cout << "[GWP-TRACE] 21a-OOB Aineq_steps.rows()=" << Aineq_steps.rows()
+                << " < 4 -- block(0,0,4,N_variable) WOULD OVERFLOW, SKIPPING"
+                << std::endl << std::flush;
+    }
+    else
+    {
+      Aeq.block<2, 2>(2, 2 * m_C).setIdentity();
+      beq.segment<2>(2) = X_0_swing_foot_target.translation().head<2>();
+      Aineq_steps.block(0, 0, 4, N_variable).setZero();
+      bineq_steps.head<4>().setZero();
+    }
   }
 
   Aineq_Ld = Eigen::MatrixXd::Zero(0, N_variable);
@@ -2582,20 +2726,45 @@ bool ISMPC_Solver::GetWalkingParameters(bool stop)
   Eigen::VectorXd b_swingVel_cstr = Eigen::VectorXd::Zero(0);
   if(!DoubleSupport)
   {
-    Eigen::MatrixXd N = Eigen::MatrixXd::Zero(4, 2);
-    N << 1, 0, -1, 0, 0, 1, 0, -1;
-    b_swingVel_cstr = Eigen::VectorXd::Ones(4) * m_foot_max_vel
-                      + N * X_0_swing_foot.translation().head<2>() / (m_timestamp[0] - m_tk);
-    A_swingVel_cstr = Eigen::MatrixXd::Zero(4, N_variable);
-    A_swingVel_cstr.block(0, 2 * m_C, 4, 2) = N / (m_timestamp[0] - m_tk);
+    const int col_offset = 2 * m_C;
+    std::cout << "[GWP-TRACE] 21b ENTER swingVel-cstr col_offset=" << col_offset
+              << " N_variable=" << N_variable << " m_timestamp[0]-m_tk=" << (m_timestamp[0] - m_tk)
+              << std::endl << std::flush;
+    if(col_offset + 2 > N_variable)
+    {
+      std::cout << "[GWP-TRACE] 21b-OOB col_offset=" << col_offset << " + 2 > N_variable=" << N_variable
+                << " -- A_swingVel_cstr.block WOULD OVERFLOW, SKIPPING BLOCK WRITE"
+                << std::endl << std::flush;
+      A_swingVel_cstr = Eigen::MatrixXd::Zero(4, N_variable);
+      b_swingVel_cstr = Eigen::VectorXd::Zero(4);
+    }
+    else
+    {
+      Eigen::MatrixXd N = Eigen::MatrixXd::Zero(4, 2);
+      N << 1, 0, -1, 0, 0, 1, 0, -1;
+      b_swingVel_cstr = Eigen::VectorXd::Ones(4) * m_foot_max_vel
+                        + N * X_0_swing_foot.translation().head<2>() / (m_timestamp[0] - m_tk);
+      A_swingVel_cstr = Eigen::MatrixXd::Zero(4, N_variable);
+      A_swingVel_cstr.block(0, col_offset, 4, 2) = N / (m_timestamp[0] - m_tk);
+    }
   }
 
+  std::cout << "[GWP-TRACE] 22 pre-Aineq assembly Aineq_steps(" << Aineq_steps.rows() << "," << Aineq_steps.cols()
+            << ") Aineq_zmp(" << Aineq_zmp.rows() << "," << Aineq_zmp.cols() << ") Aineq_Ld("
+            << Aineq_Ld.rows() << "," << Aineq_Ld.cols() << ") A_swingVel_cstr(" << A_swingVel_cstr.rows()
+            << "," << A_swingVel_cstr.cols() << ") N_variable=" << N_variable << std::endl << std::flush;
   Aineq = Eigen::MatrixXd::Zero(Aineq_steps.rows() + Aineq_zmp.rows() + Aineq_Ld.rows() + A_swingVel_cstr.rows(), N_variable);
   bineq = Eigen::VectorXd::Zero(Aineq.rows());
   Aineq << Aineq_zmp, Aineq_steps, Aineq_Ld, A_swingVel_cstr;
   bineq << bineq_zmp, bineq_steps, bineq_Ld, b_swingVel_cstr;
+  std::cout << "[GWP-TRACE] 23 pre-solveQP m_Q(" << m_Q.rows() << "," << m_Q.cols() << ") Aineq("
+            << Aineq.rows() << "," << Aineq.cols() << ") Aeq(" << Aeq.rows() << "," << Aeq.cols()
+            << ") m_Q.hasNaN=" << m_Q.hasNaN() << " Aineq.hasNaN=" << Aineq.hasNaN()
+            << " Aeq.hasNaN=" << Aeq.hasNaN() << std::endl << std::flush;
 
   QP_Output = solveQP();
+  std::cout << "[GWP-TRACE] 24 post-solveQP QPsuccess=" << QPsuccess << " QP_Output.size()="
+            << QP_Output.size() << " QP_Output.hasNaN=" << QP_Output.hasNaN() << std::endl << std::flush;
   stab_error = (A_stab * QP_Output - b_stab).head<2>();
 
   Eigen::VectorXd zmp_u = QP_Output.head(2 * m_C);
@@ -2652,8 +2821,16 @@ bool ISMPC_Solver::GetWalkingParameters(bool stop)
       }
     }
 
+    std::cout << "[GWP-TRACE] 25 pre-corr_steps_ loop j_Max_C=" << j_Max_C << " input_steps_.size()="
+              << input_steps_.size() << " QP_Output.size()=" << QP_Output.size() << std::endl << std::flush;
     for(int k = 0; k < j_Max_C; k++)
     {
+      if(static_cast<size_t>(k) >= input_steps_.size())
+      {
+        std::cout << "[GWP-TRACE] 25-OOB WOULD READ input_steps_[" << k << "] but size()="
+                  << input_steps_.size() << " -- SKIPPING" << std::endl << std::flush;
+        continue;
+      }
       if(AutoFootstepPlacement)
       {
         double xf = QP_Output(2 * m_C + 2 * k);
@@ -2665,6 +2842,8 @@ bool ISMPC_Solver::GetWalkingParameters(bool stop)
         corr_steps_.push_back(input_steps_[k]);
       }
     }
+    std::cout << "[GWP-TRACE] 26 post-corr_steps_ loop corr_steps_.size()=" << corr_steps_.size()
+              << std::endl << std::flush;
 
     if(m_Tail == "None" || Use_Stability_Task)
     {
@@ -2673,19 +2852,25 @@ bool ISMPC_Solver::GetWalkingParameters(bool stop)
     }
 
     Integrate();
+    std::cout << "[GWP-TRACE] 27 post-Integrate" << std::endl << std::flush;
   }
+  std::cout << "[GWP-TRACE] 28 LEAVE (success) returning true" << std::endl << std::flush;
   return true;
 }
 
 Eigen::VectorXd ISMPC_Solver::solveQP()
 {
-
   int Nvar = static_cast<int>(m_Q.rows());
   int NIneqConstr = static_cast<int>(Aineq.rows());
   int NEqConstr = static_cast<int>(Aeq.rows());
+  std::cout << "[GWP-TRACE] 23a solveQP ENTER Nvar=" << Nvar << " NIneqConstr=" << NIneqConstr
+            << " NEqConstr=" << NEqConstr << " m_p.size()=" << m_p.size() << " beq.size()=" << beq.size()
+            << " bineq.size()=" << bineq.size() << std::endl << std::flush;
   // QP.tolerance(1e-3);
   QP.problem(Nvar, NEqConstr, NIneqConstr);
+  std::cout << "[GWP-TRACE] 23b post QP.problem()" << std::endl << std::flush;
   QPsuccess = QP.solve(m_Q, m_p, Aeq, beq, Aineq, bineq);
+  std::cout << "[GWP-TRACE] 23c post QP.solve() QPsuccess=" << QPsuccess << std::endl << std::flush;
 
   return QP.result();
 }
