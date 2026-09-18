@@ -438,6 +438,17 @@ public:
   {
     return P_z_k;
   }
+  
+  std::vector<Eigen::Vector3d> m_zmp_ref_debug;
+
+  Eigen::Vector3d Get_ZmpRefDebug(const size_t indx)
+  {
+    if(indx < m_zmp_ref_debug.size())
+    {
+      return m_zmp_ref_debug[indx];
+    }
+    return Eigen::Vector3d::Zero();
+  }
 
   const Eigen::Vector3d & Delayed_ZMP() const noexcept
   {
@@ -782,6 +793,7 @@ private:
   double m_kappa_inf = 1;
   Eigen::Vector3d Lc_k = Eigen::Vector3d::Zero(); // Initial Angular Momemtum
   double perturbation_duration = 0;
+  Eigen::Vector2d m_prev_admittance_target = Eigen::Vector2d::Zero();
 
   Eigen::Matrix3d R_support_0 = Eigen::Matrix3d::Identity();
   Eigen::Matrix3d R_0_support = Eigen::Matrix3d::Identity();

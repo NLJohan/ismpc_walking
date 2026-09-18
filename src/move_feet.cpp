@@ -158,7 +158,7 @@ bool Walking_controller::MoveFeet(double t)
       if((X_0_SwingFootTarget.translation() - robot().surfacePose(swingFootName).translation()).norm() > 0.25
          && !StepRecoveryState)
       {
-        mc_rtc::log::error("Contact occured too far from reference, stoping");
+        mc_rtc::log::error("Contact occured too far from reference, stop triggered");
         Stop = true;
       }
       // if( std::abs( mc_rbdyn::rpyFromMat(realRobot().surfacePose(swingFootName).rotation()).x() -
@@ -273,18 +273,20 @@ void Walking_controller::updateTasks()
 
 void Walking_controller::switchFootSupport()
 {
-  if(supportFootName == leftFootName_)
   {
-    supportFootName = rightFootName_;
-    swingFootName = leftFootName_;
+    std::lock_guard<std::mutex> lk(mutex_mpc_);
+    if(supportFootName == leftFootName_)
+    {
+      supportFootName = rightFootName_;
+      swingFootName = leftFootName_;
+    }
+    else
+    {
+      supportFootName = leftFootName_;
+      swingFootName = rightFootName_;
+    }
   }
 
-  else
-  {
-
-    supportFootName = leftFootName_;
-    swingFootName = rightFootName_;
-  }
   mc_tasks::lipm_stabilizer::ContactState supportFoot = supportFootName == leftFootName_
                                                             ? mc_tasks::lipm_stabilizer::ContactState::Left
                                                             : mc_tasks::lipm_stabilizer::ContactState::Right;

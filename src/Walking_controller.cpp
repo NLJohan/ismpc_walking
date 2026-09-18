@@ -779,13 +779,13 @@ void Walking_controller::MoveCoM()
     {
       if(active)
       {
-        mc_rtc::log::error("Control Horizon reached");
+        mc_rtc::log::error("Control Horizon reached while standing, stop triggered");
         deactivate();
       }
     }
     else
     {
-      mc_rtc::log::error_and_throw<std::runtime_error>("Control Horizon reached");
+      mc_rtc::log::error_and_throw<std::runtime_error>("[FATAL] Control Horizon reached while walking");
     }
   }
 
@@ -808,6 +808,7 @@ void Walking_controller::MoveCoM()
   // check) for signal cases/cold-start conditions where CoM_height_vel is
   // empty, so this is safe even before the first populated solve.
   zmpTarget = mpc_state_.Get_ZMP_planarTarget(mpc_state_.Index);
+  zmp_ref_logged = MPCSolver.Get_ZmpRefDebug(mpc_state_.Index);
 
   lc_dot_target = mpc_state_.get_Lc_dot(0);
 
@@ -861,15 +862,6 @@ void Walking_controller::MoveCoM()
   admittanceTarget = mpc_state_.delayed_zmp_ + mpc_state_.get_u(0);
   admittanceTarget.z() = 0;
 
-  if((t - t_k) < controller_config_.zmp_delay + controller_config_.controller_timestep)
-  {
-    zmp_ref_logged = MPCSolver.Uk();
-  }
-  else
-  {
-    zmp_ref_logged = admittanceTarget;
-  }
-
   if(doubleSupport_state && updateAdmittance && mpc_state_.get_tds() - t_k > 0
      && mpc_state_.zmp_references().size() != 0)
   {
@@ -913,7 +905,7 @@ void Walking_controller::MoveCoM()
       if(!Stop)
       {
         Stop = true;
-        mc_rtc::log::warning("[Walking Controller] MPC control is off, cannot walk");
+        mc_rtc::log::warning("[Walking Controller] MPC control is off, cannot walk. Stop triggered");
       }
       lc_dot_target.setZero();
     }
@@ -1130,6 +1122,18 @@ void Walking_controller::reset(const mc_control::ControllerResetData & reset_dat
   config_stab.comWeight = 0;
   stabTask->configure(config_stab);
 
+  doubleSupport_state = true;
+  swing_foot_contact = false;
+  Eigen::Vector3d rf_pose = robot().surfacePose(rightFootName_).translation();
+  double rf_yaw = mc_rbdyn::rpyFromMat(robot().surfacePose(rightFootName_).rotation()).z();
+  Eigen::Vector3d lf_pose = robot().surfacePose(leftFootName_).translation();
+  double lf_yaw = mc_rbdyn::rpyFromMat(robot().surfacePose(leftFootName_).rotation()).z();
+
+  stabTask->setContacts(
+      {{mc_tasks::lipm_stabilizer::ContactState::Right, sva::PTransformd(sva::RotZ(rf_yaw), rf_pose)},
+      {mc_tasks::lipm_stabilizer::ContactState::Left, sva::PTransformd(sva::RotZ(lf_yaw), lf_pose)}});
+
+
   comTask->reset();
   leftSwingFootTask->reset();
   rightSwingFootTask->reset();
@@ -1295,7 +1299,10 @@ void Walking_controller::reset(const mc_control::ControllerResetData & reset_dat
     policyWantsWalk = false;
     Stop = true;
   }
+
   autoStart = false;
+  // DEBUG (temporary): arm the post-reset settle comparison window.
+  debug_ticks_since_reset_ = 0;
 
   // mc_rtc::log::warning(
   //     "[reset] EXIT  Robot_Walking={} active={} Stop={} t_k={} count={} ref_vel=({},{},{}) N_Steps={} "

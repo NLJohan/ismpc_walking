@@ -88,11 +88,12 @@ tasks:
 
 walking_controller:
   auto_start:
-    activate: false
+    activate: true 
     steps: 100
     speed: [0.0,0.0,0.0]
     ts: 1.1
     double_support_ratio: 0.25
+  UseStepRecovery : true
 
   min_sg_suport_duration: 0.75
   min_dbl_suport_duration: 0.25

@@ -223,6 +223,11 @@ public:
   {
     if(!(Stop && !stabilizer_active_))
     {
+      if(!Stop)
+      {
+        mc_rtc::log::warning(
+            "start_stop(): stop triggered");
+      }
       Stop = !Stop;
     }
   }
@@ -417,6 +422,11 @@ protected:
       {
         compute_trajectory_once.notify_all();
       }
+      if(!Stop)
+      {
+        mc_rtc::log::warning(
+            "datastore(\"ismpc_walking::start/stop\"): stop triggered.");
+      }
       Stop = !Stop;
     });
     datastore().make_call("ismpc_walking::configure",
@@ -510,7 +520,11 @@ protected:
   std::shared_ptr<mc_tasks::PostureTask> armTask;
   std::shared_ptr<mc_tasks::MomentumTask> momentumTask;
   std::shared_ptr<mc_tasks::CoMTask> comTask;
-  
+
+  // DEBUG (temporary): gates post-reset settle-comparison prints in run()/
+  // ComputeWalkingTrajectory(). Not behavior -- purely a counter.
+  int debug_ticks_since_reset_ = -1;
+  static constexpr int kDebugSettleWindow = 10;
 
 private:
   std::mutex mutex_mpc_;
