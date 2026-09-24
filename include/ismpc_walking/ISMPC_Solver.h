@@ -274,6 +274,23 @@ public:
     m_rl_com_z_cos_amp = cos_amp;
   }
 
+  /**
+   * Single-field counterparts to SetCoMHeightSineParams(), for the
+   * mc_rtc_interface datastore (which only carries single-argument `double`
+   * setters/getters, unlike the Cython bridge's atomic 4-argument call).
+   *
+   * Unlike SetCoMHeightSineParams(), these four are written independently
+   * and are not atomic with each other. This is safe here only because
+   * datastore_scalar_inputs writes every declared column every control
+   * period before run() (per docs/coupling.md), so all four are always
+   * current by the time the solver consumes them -- there is no
+   * in-between "some fields updated, others stale" state visible to run().
+   */
+  void SetOffset(double v) noexcept { m_rl_com_z_offset = v; }
+  void SetFrequency(double v) noexcept { m_rl_com_z_frequency = v; }
+  void SetSinAmp(double v) noexcept { m_rl_com_z_sin_amp = v; }
+  void SetCosAmp(double v) noexcept { m_rl_com_z_cos_amp = v; }
+
 
   double eta()
   {

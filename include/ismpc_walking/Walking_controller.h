@@ -465,6 +465,45 @@ protected:
     datastore().make_call("ismpc_walking::arm_swing_on", [this]() { armTask->weight(10); });
     datastore().make_call("ismpc_walking::switch_support_foot", [this]() { SwitchFootSupport_manual(); });
     datastore().make_call("ismpc_walking::set_disturbance", [this](bool val){ Use_w = val; });
+
+    // === RL interface (mc_rtc_interface datastore contract) ===
+    // Every entry here is part of the versioned boundary documented in
+    // docs/external-controller-api.md and docs/controller-timing.md. Add or
+    // remove an entry -> update both docs in the same change.
+    //
+    // Inputs (setters, all double): written every control period by
+    // datastore_scalar_inputs, before run(). See ISMPC_Solver::SetOffset/
+    // SetFrequency/SetSinAmp/SetCosAmp for why the four sine-param setters
+    // being written independently (not atomically, unlike
+    // SetCoMHeightSineParams) is safe here.
+    datastore().make_call("ismpc_walking::set_com_height_sine_offset",
+                          [this](double v) { ismpc_solver().SetOffset(v); });
+    datastore().make_call("ismpc_walking::set_com_height_sine_frequency",
+                          [this](double v) { ismpc_solver().SetFrequency(v); });
+    datastore().make_call("ismpc_walking::set_com_height_sine_sin_amp",
+                          [this](double v) { ismpc_solver().SetSinAmp(v); });
+    datastore().make_call("ismpc_walking::set_com_height_sine_cos_amp",
+                          [this](double v) { ismpc_solver().SetCosAmp(v); });
+    // Double-encoded gate: the datastore has no bool transport, so
+    // v > 0.5 is treated as "policy wants to walk". See
+    // SetPolicyWantsWalk's declaration for the full authority semantics
+    // (unconditionally overrides ISMPC's own autonomous stop logic).
+    datastore().make_call("ismpc_walking::set_policy_wants_walk",
+                          [this](double v) { SetPolicyWantsWalk(v > 0.5); });
+    // ismpc_walking::set_ts already exists above (native double setter,
+    // forwards to ts(double)) -- reused as-is for the RL path, no new
+    // entry needed here.
+
+    // Outputs (getters, all double): collected into datastore_scalar_outputs.
+    // New, additional entries alongside the existing bool-typed
+    // ismpc_walking::stop_phase / ismpc_walking::robot_walking above (left
+    // untouched -- the GUI still uses those). The native transport cannot
+    // carry bool, hence the *_d-suffixed double-encoded duplicates here.
+    datastore().make_call("ismpc_walking::wants_stop_d",
+                          [this]() -> double { return ismpcWantsStop() ? 1.0 : 0.0; });
+    datastore().make_call("ismpc_walking::robot_walking_d",
+                          [this]() -> double { return Robot_Walking ? 1.0 : 0.0; });
+    // === end RL interface ===
   }
 
   void comHeight(double h)
