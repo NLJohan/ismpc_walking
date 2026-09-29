@@ -396,7 +396,7 @@ void ISMPC_Solver::init_MPC(const MPC_state & mpc_state, std::string Tail, int S
   m_delay_elapsed = std::min(m_delay - (m_t_global - m_t_delay), m_delay);
   if(m_t_global - m_t_delay > m_delta || m_tk == 0 || m_delay_elapsed < 0)
   {
-    U_k = mpc_state.Uk;
+    U_k = m_admittance_targets.empty() ? P_z_k : m_admittance_targets.front();
     m_t_delay = m_t_global;
     m_delay_elapsed = m_delay;
   }
@@ -2296,7 +2296,6 @@ void ISMPC_Solver::Integrate()
 {
   m_X_MPC.clear();
   m_Y_MPC.clear();
-  m_zmp_ref_debug.clear();
   int N = (int)(m_delta / m_delta_control);
   int N_delay = static_cast<int>(m_delay_elapsed / m_delta_control);
 
@@ -2311,14 +2310,13 @@ void ISMPC_Solver::Integrate()
 
   m_X_MPC.push_back(Eigen::Vector3d{state_x.x(), state_x.y(), P_z_k.x()});
   m_Y_MPC.push_back(Eigen::Vector3d{state_y.x(), state_y.y(), P_z_k.y()});
-  m_zmp_ref_debug.push_back(Eigen::Vector3d{m_prev_admittance_target.x(), m_prev_admittance_target.y(), 0.0});
 
   Eigen::Vector2d Lc_dot_comp;
   Lc_dot_comp << -m_Ldot_c(m_C), m_Ldot_c(0);
   Lc_dot_comp /= (m_mass * std::pow(eta, 2) * CoM_height[0]);
 
   Eigen::Vector2d Pzi = (kappa * P_z_k.head<2>() - w - Lc_dot_comp);
-  Eigen::Vector2d zmp_ref = kappa * m_prev_admittance_target - w - Lc_dot_comp;
+  Eigen::Vector2d zmp_ref = kappa * U_k.head<2>() - w - Lc_dot_comp;
 
   // Time-Varying Fix: the homogeneous propagation matrix Integration_Mat must reflect the eta
   // applicable to *this* sub-stepping window. It was previously left stale from construction time
@@ -2338,12 +2336,9 @@ void ISMPC_Solver::Integrate()
 
     m_X_MPC.push_back(Eigen::Vector3d{state_x.x(), state_x.y(), (zmp + w + Lc_dot_comp).x() / kappa});
     m_Y_MPC.push_back(Eigen::Vector3d{state_y.x(), state_y.y(), (zmp + w + Lc_dot_comp).y() / kappa});
-    // Block A's asymptote in physical ZMP space, same transform as X_MPC/Y_MPC's own zmp column
-    m_zmp_ref_debug.push_back(Eigen::Vector3d{(zmp_ref + w + Lc_dot_comp).x() / kappa,
-                                              (zmp_ref + w + Lc_dot_comp).y() / kappa, 0.0});
   }
 
-  zmp_ref = kappa * P_z_k.head<2>() - w - Lc_dot_comp;
+  zmp_ref = kappa * P_z_k_delayed.head<2>() - w;
 
   m_admittance_targets.clear();
   for(Eigen::Index i = 0; i < m_C; i++)
@@ -2374,10 +2369,6 @@ void ISMPC_Solver::Integrate()
     Pzi = (Eigen::Vector2d{m_X_MPC.back()[2], m_Y_MPC.back()[2]} * kappa - w - Lc_dot_comp);
 
     m_admittance_targets.push_back(Eigen::Vector3d{(zmp_ref + w + Lc_dot_comp).x(), (zmp_ref + w + Lc_dot_comp).y(), 0.0} / kappa);
-    if(i == 0)
-    {
-      m_prev_admittance_target = m_admittance_targets.back().head<2>();
-    }
 
     for(int k = 0; k < N; k++)
     {
@@ -2391,9 +2382,6 @@ void ISMPC_Solver::Integrate()
 
       m_X_MPC.push_back(Eigen::Vector3d{state_x.x(), state_x.y(), (zmp + w + Lc_dot_comp).x() / kappa});
       m_Y_MPC.push_back(Eigen::Vector3d{state_y.x(), state_y.y(), (zmp + w + Lc_dot_comp).y() / kappa});
-      // Same zmp_ref, same transform, pushed once per fine sample -- identical indexing to X_MPC/Y_MPC
-      m_zmp_ref_debug.push_back(Eigen::Vector3d{(zmp_ref + w + Lc_dot_comp).x() / kappa,
-                                                (zmp_ref + w + Lc_dot_comp).y() / kappa, 0.0});
     }
     zmp_ref += Lc_dot_comp;
   }

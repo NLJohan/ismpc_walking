@@ -850,7 +850,6 @@ void Walking_controller::MoveCoM()
   // check) for signal cases/cold-start conditions where CoM_height_vel is
   // empty, so this is safe even before the first populated solve.
   zmpTarget = mpc_state_.Get_ZMP_planarTarget(mpc_state_.Index);
-  zmp_ref_logged = MPCSolver.Get_ZmpRefDebug(mpc_state_.Index);
 
   lc_dot_target = mpc_state_.get_Lc_dot(0);
 
