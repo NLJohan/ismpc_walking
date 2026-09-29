@@ -389,6 +389,19 @@ protected:
 
   void JoystickInputs();
 
+  // The RL/manual reference-velocity mux. Runs once per control tick, inside
+  // run()'s existing mutex_mpc_ critical section, before UpdatePlanner_input().
+  // rlVelocityControl == true:  reference_velocity = rl_reference_velocity,
+  //                             velocityControl forced true (otherwise the
+  //                             planner reads target_pose_ instead and the
+  //                             twist is silently ignored).
+  // rlVelocityControl == false: reference_velocity = user_reference_velocity;
+  //                             velocityControl is NOT touched here, so the
+  //                             existing "Velocity Control Mode" checkbox /
+  //                             set_ref_pose pose-mode behaviour is preserved
+  //                             exactly as before this change.
+  void updateReferenceVelocity();
+
   void updateTasks();
 
   void addToGUI();
@@ -456,6 +469,19 @@ protected:
       reference_velocity = vel;
       velocityControl = true;
     });
+    // RL-driven twist (mc_mjlab's IsmpcSineAction). Writes ONLY
+    // rl_reference_velocity -- never the effective reference_velocity
+    // directly -- so it is inert whenever rlVelocityControl is false (see
+    // updateReferenceVelocity()). Vector3d-by-value, matching the native
+    // interface's supported datastore_vectors_inputs transport.
+    datastore().make_call("ismpc_walking::set_rl_ref_vel",
+                          [this](Eigen::Vector3d vel) { rl_reference_velocity = vel; });
+    // Human/joystick intent, read-only. Lets a (not yet built) future
+    // policy variant observe the human command even while RL mode is
+    // active, and is how mc_mjlab's mdp.py exposes joystick/GUI intent as
+    // an observation input -- see user_reference_velocity's declaration.
+    datastore().make_call("ismpc_walking::get_user_ref_vel",
+                          [this]() -> const Eigen::Vector3d & { return user_reference_velocity; });
     datastore().make_call("ismpc_walking::set_ref_pose", [this](sva::PTransformd pose) {
       target_pose_ = pose;
       velocityControl = false;
@@ -797,7 +823,40 @@ private:
   double Vx_i = 0;
   double Vy_i = 0;
   double Omega_i = 0;
+  // The EFFECTIVE reference velocity: the sole value UpdatePlanner_input()
+  // (and everything else that already reads reference_velocity) sees. Never
+  // written directly except by updateReferenceVelocity(), the RL/manual mux
+  // -- every other site (GUI ArrayInput, JoystickInputs()) writes
+  // user_reference_velocity instead. Kept unchanged in type/name so no
+  // downstream consumer needs to change.
   Eigen::Vector3d reference_velocity = Eigen::Vector3d::Zero();
+  // Human intent: written by the GUI "User reference velocity" ArrayInput
+  // and by JoystickInputs() (whichever is live -- joystick already
+  // overrides the GUI every tick when connected, same last-writer-wins
+  // behaviour as before this change). Exposed read-only to Python via the
+  // ismpc_walking::get_user_ref_vel datastore getter so the RL policy can
+  // observe human/joystick intent even while RL mode is driving the
+  // effective velocity -- this is NOT a fallback value, it is a real
+  // observation input to the policy when rlVelocityControl is true.
+  Eigen::Vector3d user_reference_velocity = Eigen::Vector3d::Zero();
+  // Policy output: written only by the ismpc_walking::set_rl_ref_vel
+  // datastore setter (mc_mjlab's IsmpcSineAction). Ignored by the mux
+  // whenever rlVelocityControl is false.
+  Eigen::Vector3d rl_reference_velocity = Eigen::Vector3d::Zero();
+  // RL/manual velocity-source toggle. YAML-configured default
+  // (walking_controller: rl_velocity_control, see the constructor) plus a
+  // live GUI checkbox ("RL Reference Velocity") -- same shape as
+  // policyControlsTs, and deliberately a plain bool for the same reason:
+  // policyControlsTs (read from run() via ts()/T_Steps, written from the
+  // GUI thread via the "Ts Control Mode (RL)" checkbox) already establishes
+  // that this class treats such GUI-toggleable mode bools as plain bool,
+  // not std::atomic<bool> -- follow that precedent rather than introduce a
+  // new idiom for this one flag. Intentionally NOT exposed via the
+  // datastore: nothing here should let Python flip this from under a human
+  // operator (or vice versa, have a training run's behaviour depend on
+  // Python writing it) -- it is a session/config-level choice, not
+  // per-tick RL output.
+  bool rlVelocityControl = false;
 
   Eigen::Vector3d staticPose = Eigen::Vector3d::Zero();
 

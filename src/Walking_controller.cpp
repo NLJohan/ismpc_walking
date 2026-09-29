@@ -201,6 +201,23 @@ Walking_controller::Walking_controller(mc_rbdyn::RobotModulePtr rm,
   UseStepRecovery = config("walking_controller")("UseStepRecovery");
   autoStartConfigured = autoStart;
   reference_velocity.setZero();
+  user_reference_velocity.setZero();
+  rl_reference_velocity.setZero();
+
+  // rl_velocity_control: YAML default for the RL/manual reference-velocity
+  // mux (see rlVelocityControl's declaration). Sibling of auto_start, same
+  // walking_controller config block. Optional key -- defaults to false
+  // (manual/joystick control) if absent, matching the feature's safe
+  // default. Live GUI-toggleable afterwards; this only sets the starting
+  // value.
+  rlVelocityControl = config("walking_controller").has("rl_velocity_control")
+                          ? static_cast<bool>(config("walking_controller")("rl_velocity_control"))
+                          : false;
+  // One-time, per-controller-build message (NOT per-tick) -- primary
+  // defence against silently training with RL velocity control off because
+  // a YAML key was missing or misspelled. Always emitted regardless of
+  // other console-output settings.
+  mc_rtc::log::info("[ismpc_walking] RL velocity control: {}", rlVelocityControl);
 
   MPCSolver.Allow_none(controller_config_.MPC_allow_None);
 
@@ -248,7 +265,12 @@ Walking_controller::Walking_controller(mc_rbdyn::RobotModulePtr rm,
     N_Steps_Desired = N_Steps_Desired_std;
     double t_step = config("walking_controller")("auto_start")("ts");
     ts(t_step);
-    reference_velocity = config("walking_controller")("auto_start")("speed");
+    // NOTE: was `reference_velocity = ...`. Must write user_reference_velocity,
+    // not the effective reference_velocity: updateReferenceVelocity() (the
+    // mux, called every run() tick) would otherwise silently overwrite this
+    // with a zeroed user_reference_velocity (rlVelocityControl defaults
+    // false) on the very first tick, breaking auto_start's initial speed.
+    user_reference_velocity = config("walking_controller")("auto_start")("speed");
     controller_config_.Double_Step_Ratio = config("walking_controller")("auto_start")("double_support_ratio");
   }
 }
@@ -478,6 +500,25 @@ void Walking_controller::ComputeWalkingTrajectory()
   }
 }
 
+void Walking_controller::updateReferenceVelocity()
+{
+  if(rlVelocityControl)
+  {
+    reference_velocity = rl_reference_velocity;
+    // Otherwise UpdatePlanner_input() reads target_pose_ instead and the
+    // twist is silently ignored -- see velocityControl's declaration and
+    // UpdatePlanner_input() below.
+    velocityControl = true;
+  }
+  else
+  {
+    // Manual branch deliberately does NOT touch velocityControl: preserves
+    // the existing "Velocity Control Mode" checkbox / set_ref_pose pose-mode
+    // behaviour exactly as before this change.
+    reference_velocity = user_reference_velocity;
+  }
+}
+
 void Walking_controller::UpdatePlanner_input()
 {
   mpc_state_.input_v_.clear();
@@ -663,6 +704,7 @@ bool Walking_controller::run()
     //       << " Index=" << mpc_state_.Index
     //       << " QPSuccess=" << mpc_state_.QPSuccess
     //       << std::endl;
+    updateReferenceVelocity();
     MoveCoM();
     UpdateInitialVectors();
     UpdatePlanner_input();
@@ -1269,6 +1311,21 @@ void Walking_controller::reset(const mc_control::ControllerResetData & reset_dat
   // (see Steps/Steps_Desired in ComputeWalkingTrajectory(), also never
   // reset elsewhere).
   reference_velocity.setZero();
+  // Same staleness concern as reference_velocity above, extended to the two
+  // new backing vectors: without this, user_reference_velocity carries over
+  // the previous episode's last joystick/GUI sample, and rl_reference_velocity
+  // carries over the previous episode's last policy twist -- either would
+  // seed the very first post-reset UpdatePlanner_input() call (via the mux,
+  // called every run() tick) with a stale command. NOTE: rlVelocityControl
+  // itself is deliberately NOT reset here -- it is a session/config-level
+  // choice (YAML + live GUI), not per-episode state; resetting it would
+  // either spuriously flip the active mode on every episode boundary or
+  // require re-reading YAML on every reset, neither of which is wanted. The
+  // policy's next set_rl_ref_vel call (if RL mode is on) or the next
+  // joystick/GUI sample (if off) overwrites these before they matter, same
+  // as T_Steps below.
+  user_reference_velocity.setZero();
+  rl_reference_velocity.setZero();
   N_Steps = 0;
 
   // T_Steps has the identical staleness concern as reference_velocity just

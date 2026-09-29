@@ -46,26 +46,34 @@ void Walking_controller::JoystickInputs()
           Stop = true;
         }
       }
-      reference_velocity.setZero();
+      // Writes user_reference_velocity (human intent) only, never the
+      // effective reference_velocity -- see user_reference_velocity's
+      // declaration in Walking_controller.h. updateReferenceVelocity() (the
+      // RL/manual mux, run() every tick) decides whether this reaches the
+      // planner. When RL mode is on, this is instead surfaced to Python as
+      // an observation via the ismpc_walking::get_user_ref_vel datastore
+      // getter -- the joystick keeps running exactly as before, its output
+      // just has a different destination now.
+      user_reference_velocity.setZero();
       double vx_forward = -trigger_func(joystickAnalogicInputs::RT) + 1;
       double vx_backward = -trigger_func(joystickAnalogicInputs::LT) + 1;
       if(vx_forward > 0.1)
       {
-        reference_velocity.x() = vx_forward;
+        user_reference_velocity.x() = vx_forward;
       }
       if(vx_backward > 0.1)
       {
-        reference_velocity.x() = -vx_backward;
+        user_reference_velocity.x() = -vx_backward;
       }
       double omega = stick_func(joystickAnalogicInputs::R_STICK).y() - 0.5;
       double vy = stick_func(joystickAnalogicInputs::L_STICK).y() - 0.5;
       if(std::abs(omega) > 0.1)
       {
-        reference_velocity.z() = omega;
+        user_reference_velocity.z() = omega;
       }
       if(std::abs(vy) > 0.15)
       {
-        reference_velocity.y() = vy;
+        user_reference_velocity.y() = vy;
       }
     }
   }

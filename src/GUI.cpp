@@ -317,10 +317,38 @@ void Walking_controller::addToGUI()
       {"Walking", "Footsteps Parameters"},
       mc_rtc::gui::Checkbox(
           "Velocity Control Mode", [this]() { return velocityControl; },
-          [this]() { velocityControl = !velocityControl; }),
+          [this]() {
+            // Guarded the same way "Ts" is guarded against policyControlsTs
+            // below: while RL drives the effective reference_velocity
+            // (rlVelocityControl true), updateReferenceVelocity() forces
+            // velocityControl true every tick regardless, so unticking this
+            // here would be silently overwritten on the very next run()
+            // tick anyway -- block the write here too so the checkbox's
+            // displayed state doesn't lie in the meantime.
+            if(!rlVelocityControl)
+            {
+              velocityControl = !velocityControl;
+            }
+          }),
       mc_rtc::gui::ArrayInput(
-          "Reference velocity", {"x", "y", "omega"}, [this]() -> const Eigen::Vector3d & { return reference_velocity; },
-          [this](const Eigen::Vector3d & vel) { reference_velocity = vel; }),
+          "User reference velocity", {"x", "y", "omega"},
+          [this]() -> const Eigen::Vector3d & { return user_reference_velocity; },
+          [this](const Eigen::Vector3d & vel) { user_reference_velocity = vel; }),
+      mc_rtc::gui::Checkbox(
+          "RL Reference Velocity", [this]() { return rlVelocityControl; },
+          [this]() { rlVelocityControl = !rlVelocityControl; }),
+      // Read-only displays, mirroring the "Next Step Timing" Label pattern
+      // used elsewhere in this file (mc_rtc::gui::ArrayLabel's existence is
+      // NOT confirmed against the mc_rtc version in use -- using three
+      // scalar Labels per vector instead, which IS an already-proven
+      // pattern in this file, rather than risk an unverified GUI element).
+      // Swap to ArrayLabel later if/when confirmed available.
+      mc_rtc::gui::Label("RL reference velocity x", [this]() { return rl_reference_velocity.x(); }),
+      mc_rtc::gui::Label("RL reference velocity y", [this]() { return rl_reference_velocity.y(); }),
+      mc_rtc::gui::Label("RL reference velocity omega", [this]() { return rl_reference_velocity.z(); }),
+      mc_rtc::gui::Label("Effective reference velocity x", [this]() { return reference_velocity.x(); }),
+      mc_rtc::gui::Label("Effective reference velocity y", [this]() { return reference_velocity.y(); }),
+      mc_rtc::gui::Label("Effective reference velocity omega", [this]() { return reference_velocity.z(); }),
       mc_rtc::gui::Checkbox(
           "Ts Control Mode (RL)", [this]() { return policyControlsTs; },
           [this]() { policyControlsTs = !policyControlsTs; }),

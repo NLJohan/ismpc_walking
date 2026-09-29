@@ -60,7 +60,7 @@ ismpc:
   allow_none_tail: true
   foosteps_kin_cstr: [0.6,0.25]
   footsteps_cstr_square: [0.6,0.25]
-  ts_range: [0.7,2]
+  ts_range: [0.4,2]
   tds_range: [0.2,1.5]
   tss_range: [0.5,1.5]
   double_support_ratio: 0.4
@@ -94,6 +94,7 @@ walking_controller:
     ts: 1.1
     double_support_ratio: 0.25
   UseStepRecovery : true
+  rl_velocity_control: true
 
   min_sg_suport_duration: 0.75
   min_dbl_suport_duration: 0.25
