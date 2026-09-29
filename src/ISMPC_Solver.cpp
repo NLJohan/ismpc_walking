@@ -95,7 +95,7 @@ void ISMPC_Solver::init_MPC(const MPC_state & mpc_state, std::string Tail, int S
   m_delay_elapsed = std::min(m_delay - (m_t_global - m_t_delay), m_delay);
   if(m_t_global - m_t_delay > m_delta || m_tk == 0 || m_delay_elapsed < 0)
   {
-    U_k = mpc_state.Uk;
+    U_k = m_admittance_targets.empty() ? P_z_k : m_admittance_targets.front();
     m_t_delay = m_t_global;
     m_delay_elapsed = m_delay;
   }
