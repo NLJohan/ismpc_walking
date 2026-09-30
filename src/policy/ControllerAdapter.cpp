@@ -1,0 +1,186 @@
+#include "ismpc_walking/policy/ControllerAdapter.h"
+
+#include "ismpc_walking/Walking_controller.h"
+
+#include <algorithm>
+#include <cmath>
+#include <exception>
+#include <unordered_map>
+
+namespace ismpc_walking::policy
+{
+
+namespace
+{
+// Body sensor named in the ObserverPipelines block of ismpc_walking.in.yaml (diagnostics only).
+constexpr const char * kGyroSensor = "FloatingBase";
+// mbIndex_ value for a contract joint that has no single DoF in the robot model (mbc.alpha not readable).
+constexpr size_t kNoMbIndex = static_cast<size_t>(-1);
+
+// Training reads com_lin_vel and ismpc_wants_stop through the datastore, and the action base hands the controller
+// output of the PREVIOUS dispatch to the observation (McRtcActionBase._advance_control_period collects before it
+// dispatches). For a latch at step k the policy saw robot terms of step k-1, com_lin_vel computed at step k-2 and
+// the wants_stop flag as left by the end of step k-2's run, which is what sample() sees at the start of step k-1.
+// [I] Inferred from reading mc_rtc_action_base.py / ismpc_sine_action.py, not measured. Set both to 0 to disable.
+constexpr size_t kComLinVelLagTicks = 2;
+constexpr size_t kWantsStopLagTicks = 1;
+
+Vec3 toVec3(const Eigen::Vector3d & v) { return {v.x(), v.y(), v.z()}; }
+} // namespace
+
+ControllerAdapter::ControllerAdapter(Walking_controller & ctl) : ctl_(ctl) {}
+
+bool ControllerAdapter::bind(const std::vector<std::string> & contract_joints, std::string & err)
+{
+  try
+  {
+    const auto & robot = ctl_.realRobot();
+    const auto & order = robot.refJointOrder();
+    std::unordered_map<std::string, size_t> refPos;
+    for(size_t i = 0; i < order.size(); ++i) { refPos.emplace(order[i], i); }
+
+    std::vector<size_t> ref, mb;
+    std::string notOneDof;
+    ref.reserve(contract_joints.size());
+    mb.reserve(contract_joints.size());
+    for(const auto & name : contract_joints)
+    {
+      const auto it = refPos.find(name);
+      if(it == refPos.end())
+      {
+        err = "robot binding: joint '" + name + "' is not in the robot's refJointOrder";
+        return false;
+      }
+      if(!robot.hasJoint(name))
+      {
+        err = "robot binding: joint '" + name + "' does not exist in the robot model";
+        return false;
+      }
+      // joint_pos / joint_vel come from encoderValues() / encoderVelocities() by refJointOrder index, so a joint
+      // without a single DoF in the model is still readable. Only the mbc.alpha diagnostic needs one DoF.
+      const auto mi = robot.jointIndexByName(name);
+      const int dof = robot.mb().joint(static_cast<int>(mi)).dof();
+      ref.push_back(it->second);
+      if(dof == 1) { mb.push_back(static_cast<size_t>(mi)); }
+      else
+      {
+        mb.push_back(kNoMbIndex);
+        notOneDof += (notOneDof.empty() ? "" : ", ") + name + " (dof " + std::to_string(dof) + ")";
+      }
+    }
+    if(!notOneDof.empty())
+    {
+      mc_rtc::log::warning(
+          "[ismpc_policy] robot binding: contract joints that are not 1-DoF in the robot model: {}. Their values are read "
+          "from encoderValues()/encoderVelocities() by name; mbc.alpha is not used for them.",
+          notOneDof);
+    }
+    refIndex_ = std::move(ref);
+    mbIndex_ = std::move(mb);
+    filled_ = 0;
+    return true;
+  }
+  catch(const std::exception & e)
+  {
+    err = std::string("robot binding failed: ") + e.what();
+    return false;
+  }
+}
+
+void ControllerAdapter::sample() noexcept
+{
+  try
+  {
+    hist_[2] = hist_[1];
+    hist_[1] = hist_[0];
+    hist_[0].com_lin_vel = toVec3(ctl_.estimatedComLinVel());
+    hist_[0].wants_stop = ctl_.ismpcWantsStop() ? 1.0 : 0.0;
+    filled_ = std::min<size_t>(filled_ + 1, hist_.size());
+  }
+  catch(...)
+  {
+  }
+}
+
+bool ControllerAdapter::read(RobotState & out, std::string & err) noexcept
+{
+  try
+  {
+    if(refIndex_.empty())
+    {
+      err = "robot state: no joints bound";
+      return false;
+    }
+    const auto & robot = ctl_.realRobot();
+    const size_t nRef = robot.refJointOrder().size();
+
+    // Frames. sva: posW().rotation() maps world axes into body axes (world -> body).
+    const Eigen::Matrix3d E = robot.posW().rotation();
+    // com_lin_vel is already in base axes. Lagged as in training when the history is long enough, else the
+    // oldest sample we have (only the first two steps after a load).
+    if(filled_ > 0)
+    {
+      out.com_lin_vel = hist_[std::min(kComLinVelLagTicks, filled_ - 1)].com_lin_vel;
+      out.ismpc_wants_stop = hist_[std::min(kWantsStopLagTicks, filled_ - 1)].wants_stop;
+    }
+    else
+    {
+      out.com_lin_vel = toVec3(ctl_.estimatedComLinVel());
+      out.ismpc_wants_stop = ctl_.ismpcWantsStop() ? 1.0 : 0.0;
+    }
+    out.target_twist = toVec3(ctl_.user_reference_velocity); // human/joystick intent; the builder clamps it
+    out.base_ang_vel = toVec3(E * robot.velW().angular());               // world -> body
+    out.projected_gravity = toVec3(E * Eigen::Vector3d(0., 0., -1.));    // mjlab: R^T * g_w
+
+    // Joints, by name (contract order).
+    const auto & enc = robot.encoderValues();
+    if(enc.size() != nRef)
+    {
+      err = "robot state: encoderValues() has " + std::to_string(enc.size()) + " values, expected "
+            + std::to_string(nRef);
+      return false;
+    }
+    const auto & encVel = robot.encoderVelocities();
+    const bool haveEncVel = (encVel.size() == nRef);
+    const auto & alpha = robot.mbc().alpha;
+
+    const size_t n = refIndex_.size();
+    out.joint_pos.assign(n, 0.);
+    out.joint_vel.assign(n, 0.);
+    out.diag = RobotState::Diagnostics{};
+    out.diag.encoder_vel_max_abs = haveEncVel ? 0. : -1.;
+    for(size_t i = 0; i < n; ++i)
+    {
+      out.joint_pos[i] = enc[refIndex_[i]];
+      const double a = (mbIndex_[i] == kNoMbIndex) ? 0. : alpha[mbIndex_[i]][0];
+      out.diag.alpha_max_abs = std::max(out.diag.alpha_max_abs, std::fabs(a));
+      if(haveEncVel)
+      {
+        const double v = encVel[refIndex_[i]];
+        out.diag.encoder_vel_max_abs = std::max(out.diag.encoder_vel_max_abs, std::fabs(v));
+        out.joint_vel[i] = v;
+      }
+      else { out.joint_vel[i] = a; }
+    }
+    out.diag.joint_vel_source = haveEncVel ? "encoderVelocities()" : "mbc.alpha (encoderVelocities() is empty)";
+
+    if(robot.hasBodySensor(kGyroSensor))
+    {
+      out.diag.has_gyro = true;
+      out.diag.gyro = toVec3(robot.bodySensor(kGyroSensor).angularVelocity());
+    }
+    return true;
+  }
+  catch(const std::exception & e)
+  {
+    err = std::string("robot state: ") + e.what();
+    return false;
+  }
+  catch(...)
+  {
+    err = "robot state: unknown error";
+    return false;
+  }
+}
+
+} // namespace ismpc_walking::policy

@@ -112,6 +112,7 @@ walking_controller:
 policy:
   dir: "@CMAKE_CURRENT_SOURCE_DIR@/policies" # the GUI dropdown lists the *.onnx files of this folder
   file: "model_0.onnx" # e.g. "model_0.onnx" (relative to dir) or an absolute path; empty = load nothing
+  debug_no_apply: true # TEMPORARY (removed in step 9): while a policy is Ready, log the observation once per second; never moves the robot
 
 transitions:
   - [Initial,Ok,Initial]

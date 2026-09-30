@@ -1,8 +1,11 @@
 #pragma once
 
+#include "ismpc_walking/policy/ActionDecoder.h"
 #include "ismpc_walking/policy/PolicyBackend.h"
 #include "ismpc_walking/policy/PolicyContract.h"
 #include "ismpc_walking/policy/PolicyLibrary.h"
+#include "ismpc_walking/policy/ObservationBuilder.h"
+#include "ismpc_walking/policy/RobotState.h"
 
 #include <mc_rtc/gui/StateBuilder.h>
 
@@ -39,9 +42,11 @@ public:
     std::vector<std::string> joint_names; // robot joints, refJointOrder
     std::string dir;  // policies directory (may be empty)
     std::string file; // model to load at start-up (absolute, or relative to dir); empty = none
+    bool debug_no_apply = false; // TEMPORARY (removed in step 9): log the observation while Ready, never move the robot
   };
 
-  explicit PolicyRunner(Options options);
+  /** `source` (may be null) provides the robot state for the observation; the runner owns it. */
+  explicit PolicyRunner(Options options, std::unique_ptr<StateSource> source = nullptr);
   ~PolicyRunner();
 
   PolicyRunner(const PolicyRunner &) = delete;
@@ -87,6 +92,7 @@ private:
   bool fail(const std::string & path, const std::string & msg);
   std::string resolve(const std::string & file) const;
   void buildGui();
+  void debugTick() noexcept; // TEMPORARY (step 6): periodic observation log while Ready
 
   Options options_;
   PolicyLibrary library_;
@@ -101,6 +107,12 @@ private:
   std::string loadedFile_;
   PolicyContract contract_;
   std::unique_ptr<PolicyBackend> backend_;
+  std::unique_ptr<StateSource> source_;
+  std::unique_ptr<ObservationBuilder> builder_;
+  std::unique_ptr<ActionDecoder> decoder_; // latch bookkeeping and the current (previous-latch) command
+  std::vector<double> obs_;  // observation being built (contract order), sized at load
+  std::vector<float> obsF_;  // the same, cast to float32 for the network
+  long debugTicks_ = 0;
 };
 
 } // namespace ismpc_walking::policy

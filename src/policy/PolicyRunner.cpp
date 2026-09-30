@@ -53,9 +53,10 @@ std::string PolicyRunner::onnxRuntimeVersion()
 #endif
 }
 
-PolicyRunner::PolicyRunner(Options options)
+PolicyRunner::PolicyRunner(Options options, std::unique_ptr<StateSource> source)
 : options_(std::move(options)), library_(options_.dir), selected_(options_.file)
 {
+  source_ = std::move(source);
   if(builtWithOnnxRuntime())
   {
     mc_rtc::log::info("[ismpc_policy] state=NoPolicy, built with ONNX Runtime {}", onnxRuntimeVersion());
@@ -80,6 +81,10 @@ std::string PolicyRunner::resolve(const std::string & file) const
 bool PolicyRunner::fail(const std::string & path, const std::string & msg)
 {
   backend_.reset();
+  builder_.reset();
+  decoder_.reset();
+  obs_.clear();
+  obsF_.clear();
   contract_ = PolicyContract{};
   loadedFile_.clear();
   benchAvgUs_ = benchMaxUs_ = 0;
@@ -98,6 +103,10 @@ bool PolicyRunner::unload()
     return false;
   }
   backend_.reset();
+  builder_.reset();
+  decoder_.reset();
+  obs_.clear();
+  obsF_.clear();
   contract_ = PolicyContract{};
   loadedFile_.clear();
   lastError_.clear();
@@ -141,6 +150,11 @@ bool PolicyRunner::load(const std::string & file)
                           + " outputs but the contract says action.dim = " + std::to_string(contract.action_dim));
   }
 
+  // 2b. observation builder, and the robot binding (contract joint names -> robot joints)
+  auto builder = ObservationBuilder::create(contract, err);
+  if(!builder) { return fail(path, err); }
+  if(source_ && !source_->bind(contract.joint_names, err)) { return fail(path, err); }
+
   // 3. smoke inference on a zero observation, plus a timing measurement
   std::vector<float> obs(static_cast<size_t>(contract.obs_dim), 0.f);
   std::vector<float> act(static_cast<size_t>(contract.action_dim), std::numeric_limits<float>::quiet_NaN());
@@ -162,7 +176,11 @@ bool PolicyRunner::load(const std::string & file)
 
   // 4. commit
   backend_ = std::move(backend);
+  builder_ = std::move(builder);
+  obs_.assign(static_cast<size_t>(contract.obs_dim), 0.0);
+  obsF_.assign(static_cast<size_t>(contract.obs_dim), 0.f);
   contract_ = std::move(contract);
+  decoder_ = std::make_unique<ActionDecoder>(contract_);
   loadedFile_ = path;
   lastError_.clear();
   benchAvgUs_ = sumUs / kBenchRuns;
@@ -216,7 +234,104 @@ void PolicyRunner::tick() noexcept
       mc_rtc::log::error("[ismpc_policy] GUI rebuild failed");
     }
   }
+  if(source_ && state_ != PolicyState::NoPolicy) { source_->sample(); } // every step: keeps the datastore-lag history
+  if(state_ == PolicyState::Ready && options_.debug_no_apply) { debugTick(); }
   if(state_ != PolicyState::Active && state_ != PolicyState::Releasing) { return; }
+}
+
+namespace
+{
+std::string fmtVec3(const Vec3 & v)
+{
+  char buf[96];
+  std::snprintf(buf, sizeof(buf), "[%+.3f %+.3f %+.3f]", v[0], v[1], v[2]);
+  return buf;
+}
+
+std::string fmtN(const double * v, int n)
+{
+  std::string out = "[";
+  char buf[32];
+  for(int i = 0; i < n; ++i)
+  {
+    std::snprintf(buf, sizeof(buf), i ? " %+.3f" : "%+.3f", v[i]);
+    out += buf;
+  }
+  return out + "]";
+}
+} // namespace
+
+// TEMPORARY (step 6, removed in step 9): once per second while Ready with policy.debug_no_apply, read the robot
+// state, build the state terms and log them. Reads only; nothing is written to the controller.
+void PolicyRunner::debugTick() noexcept
+{
+  try
+  {
+    if(!source_ || !builder_) { return; }
+    const long every = std::max<long>(1, std::lround(1.0 / options_.controller_dt));
+    if(++debugTicks_ % every != 0) { return; }
+
+    RobotState s;
+    std::string err;
+    if(!source_->read(s, err))
+    {
+      mc_rtc::log::warning("[ismpc_policy] debug obs: {}", err);
+      return;
+    }
+    if(!builder_->build(s, decoder_->current(), obs_, err) || !ObservationBuilder::toFloat(obs_, obsF_, err))
+    {
+      mc_rtc::log::warning("[ismpc_policy] debug obs: {}", err);
+      return;
+    }
+
+    auto worst = [&](const char * term, std::string & name) {
+      const auto * t = builder_->find(term);
+      double m = 0;
+      name = "-";
+      if(!t) { return m; }
+      for(int i = 0; i < t->dim; ++i)
+      {
+        const double a = std::fabs(obs_[static_cast<size_t>(t->offset + i)]);
+        if(a >= m)
+        {
+          m = a;
+          name = contract_.joint_names[static_cast<size_t>(i)];
+        }
+      }
+      return m;
+    };
+    std::string posName, velName;
+    const double posMax = worst("joint_pos", posName);
+    const double velMax = worst("joint_vel", velName);
+    const std::string gyro = s.diag.has_gyro ? fmtVec3(s.diag.gyro) : std::string("n/a");
+    mc_rtc::log::info(
+        "[ismpc_policy] debug obs | com_lin_vel {} | base_ang_vel {} (velW) gyro {} | gravity {} | "
+        "joint_pos max|.| {:.4f} ({}) | joint_vel max|.| {:.4f} ({}) from {} | encoder vel max {:.4f} alpha max {:.4f}",
+        fmtVec3(s.com_lin_vel), fmtVec3(s.base_ang_vel), gyro, fmtVec3(s.projected_gravity), posMax, posName, velMax,
+        velName, s.diag.joint_vel_source, s.diag.encoder_vel_max_abs, s.diag.alpha_max_abs);
+
+    // Latched / command terms, as they sit in the observation vector.
+    auto slice = [&](const char * term) {
+      const auto * t = builder_->find(term);
+      return t ? obs_.data() + t->offset : nullptr;
+    };
+    const double * sine = slice("last_sine_params");
+    const double * walk = slice("last_walk_action");
+    const double * ts = slice("last_step_timing_action");
+    const double * twist = slice("last_twist_action");
+    const double * stop = slice("ismpc_wants_stop");
+    const double * target = slice("target_twist");
+    if(sine && walk && ts && twist && stop && target)
+    {
+      mc_rtc::log::info(
+          "[ismpc_policy] debug obs | last_sine {} walk {:.0f} ts {:.3f} last_twist {} | wants_stop {:.0f} | "
+          "target_twist raw {} -> obs {} | float32 vector of {} values ok",
+          fmtN(sine, 4), *walk, *ts, fmtN(twist, 3), *stop, fmtVec3(s.target_twist), fmtN(target, 3), obsF_.size());
+    }
+  }
+  catch(...)
+  {
+  }
 }
 
 bool PolicyRunner::setActive(bool on)

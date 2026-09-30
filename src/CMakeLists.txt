@@ -13,6 +13,8 @@ set(controller_SRC
   policy/PolicyLibrary.cpp
   policy/ActionDecoder.cpp
   policy/ActionDecoderParity.cpp
+  policy/ObservationBuilder.cpp
+  policy/ControllerAdapter.cpp
   policy/PolicyRunner.cpp
 )
 
@@ -28,6 +30,9 @@ set(controller_HDR
   ../include/ismpc_walking/policy/OnnxBackend.h
   ../include/ismpc_walking/policy/PolicyLibrary.h
   ../include/ismpc_walking/policy/ActionDecoder.h
+  ../include/ismpc_walking/policy/RobotState.h
+  ../include/ismpc_walking/policy/ObservationBuilder.h
+  ../include/ismpc_walking/policy/ControllerAdapter.h
   ../include/ismpc_walking/policy/PolicyRunner.h
 )
 

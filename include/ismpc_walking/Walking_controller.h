@@ -38,6 +38,7 @@ enum class StabilizerState
 namespace ismpc_walking::policy
 {
 class PolicyRunner;
+class ControllerAdapter;
 }
 
 struct Walking_controller_DLLAPI Walking_controller : public mc_control::fsm::Controller
@@ -621,6 +622,8 @@ private:
   // ONNX policy runner. Constructor/destructor are defined in Walking_controller.cpp,
   // so this header does not need the policy headers.
   std::unique_ptr<ismpc_walking::policy::PolicyRunner> policy_;
+  // The adapter is the only policy code that reads (and, from step 7, writes) controller state.
+  friend class ismpc_walking::policy::ControllerAdapter;
 
   std::mutex mutex_mpc_;
   MPC_state mpc_thread_state;

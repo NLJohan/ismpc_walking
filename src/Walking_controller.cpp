@@ -1,5 +1,6 @@
 #include "../include/ismpc_walking/Walking_controller.h"
 #include <mc_control/Configuration.h>
+#include "ismpc_walking/policy/ControllerAdapter.h"
 #include "ismpc_walking/policy/PolicyRunner.h"
 
 #ifdef __linux__
@@ -265,8 +266,10 @@ Walking_controller::Walking_controller(mc_rbdyn::RobotModulePtr rm,
       const auto policyConfig = config("policy");
       policyOptions.dir = policyConfig("dir", std::string(""));
       policyOptions.file = policyConfig("file", std::string(""));
+      policyOptions.debug_no_apply = policyConfig("debug_no_apply", false); // TEMPORARY, removed in step 9
     }
-    policy_ = std::make_unique<ismpc_walking::policy::PolicyRunner>(policyOptions);
+    policy_ = std::make_unique<ismpc_walking::policy::PolicyRunner>(
+        policyOptions, std::make_unique<ismpc_walking::policy::ControllerAdapter>(*this));
   }
   deactivate();
   mc_rtc::log::success("ismpc_walking controller init done ");
