@@ -8,6 +8,8 @@ set(controller_SRC
   logs.cpp
   joystick.cpp
   Polygon.cpp
+  policy/PolicyContract.cpp
+  policy/OnnxBackend.cpp
   policy/PolicyRunner.cpp
 )
 
@@ -18,6 +20,9 @@ set(controller_HDR
   ../include/ismpc_walking/ControllerConfiguration.h
   ../include/ismpc_walking/MPC_state.h
   ../include/ismpc_walking/Polygon.h
+  ../include/ismpc_walking/policy/PolicyContract.h
+  ../include/ismpc_walking/policy/PolicyBackend.h
+  ../include/ismpc_walking/policy/OnnxBackend.h
   ../include/ismpc_walking/policy/PolicyRunner.h
 )
 

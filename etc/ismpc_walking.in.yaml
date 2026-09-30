@@ -108,6 +108,11 @@ walking_controller:
   max_swing_foot_velocity: 1.6
   stability_error_threshold: 0.2
 
+# ONNX policy (see include/ismpc_walking/policy). Loading only validates the model; it does not move the robot.
+policy:
+  dir: "@CMAKE_CURRENT_SOURCE_DIR@"
+  file: "policies/model_0.onnx" # e.g. "model_0.onnx" (relative to dir) or an absolute path; empty = load nothing
+
 transitions:
   - [Initial,Ok,Initial]
 

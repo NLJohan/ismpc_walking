@@ -256,7 +256,18 @@ Walking_controller::Walking_controller(mc_rbdyn::RobotModulePtr rm,
     [this]() -> const double & { return controller_timestep; });
   logger().addLogEntry("mpc_delta_diag", this,
     [this]() -> const double & { return controller_config_.delta; });
-  policy_ = std::make_unique<ismpc_walking::policy::PolicyRunner>();
+  {
+    ismpc_walking::policy::PolicyRunner::Options policyOptions;
+    policyOptions.controller_dt = dt;
+    policyOptions.joint_names = robot().refJointOrder();
+    if(config.has("policy"))
+    {
+      const auto policyConfig = config("policy");
+      policyOptions.dir = policyConfig("dir", std::string(""));
+      policyOptions.file = policyConfig("file", std::string(""));
+    }
+    policy_ = std::make_unique<ismpc_walking::policy::PolicyRunner>(policyOptions);
+  }
   deactivate();
   mc_rtc::log::success("ismpc_walking controller init done ");
   if(autoStart)
