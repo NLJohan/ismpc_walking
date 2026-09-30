@@ -1,5 +1,6 @@
 #include "../include/ismpc_walking/Walking_controller.h"
 #include <mc_control/Configuration.h>
+#include "ismpc_walking/policy/PolicyRunner.h"
 
 #ifdef __linux__
 
@@ -255,6 +256,7 @@ Walking_controller::Walking_controller(mc_rbdyn::RobotModulePtr rm,
     [this]() -> const double & { return controller_timestep; });
   logger().addLogEntry("mpc_delta_diag", this,
     [this]() -> const double & { return controller_config_.delta; });
+  policy_ = std::make_unique<ismpc_walking::policy::PolicyRunner>();
   deactivate();
   mc_rtc::log::success("ismpc_walking controller init done ");
   if(autoStart)
@@ -674,6 +676,7 @@ void Walking_controller::CheckStepRecovery()
 bool Walking_controller::run()
 {
   JoystickInputs();
+  policy_->tick(); // before wait_for_mpc_thread(): counts every controller step
   if(!wait_for_mpc_thread())
   {
     return mc_control::fsm::Controller::run();

@@ -23,6 +23,7 @@
 #include "eigen-quadprog/eigen_quadprog_api.h"
 #include <chrono>
 #include <condition_variable>
+#include <memory>
 #include <mutex>
 #include <unistd.h>
 
@@ -33,6 +34,11 @@ enum class StabilizerState
   SingleSupport,
   None
 };
+
+namespace ismpc_walking::policy
+{
+class PolicyRunner;
+}
 
 struct Walking_controller_DLLAPI Walking_controller : public mc_control::fsm::Controller
 {
@@ -612,6 +618,10 @@ protected:
   static constexpr int kDebugSettleWindow = 10;
 
 private:
+  // ONNX policy runner. Constructor/destructor are defined in Walking_controller.cpp,
+  // so this header does not need the policy headers.
+  std::unique_ptr<ismpc_walking::policy::PolicyRunner> policy_;
+
   std::mutex mutex_mpc_;
   MPC_state mpc_thread_state;
   MPC_state mpc_state_;

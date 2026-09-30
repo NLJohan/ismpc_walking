@@ -8,6 +8,7 @@ set(controller_SRC
   logs.cpp
   joystick.cpp
   Polygon.cpp
+  policy/PolicyRunner.cpp
 )
 
 set(controller_HDR
@@ -17,6 +18,7 @@ set(controller_HDR
   ../include/ismpc_walking/ControllerConfiguration.h
   ../include/ismpc_walking/MPC_state.h
   ../include/ismpc_walking/Polygon.h
+  ../include/ismpc_walking/policy/PolicyRunner.h
 )
 
 set(CONTROLLER_NAME ismpc_walking)
@@ -25,6 +27,18 @@ add_library(${CONTROLLER_NAME} SHARED ${controller_SRC} ${controller_HDR})
 target_include_directories(${CONTROLLER_NAME} PUBLIC $<INSTALL_INTERFACE:include> $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>)
 target_link_libraries(${CONTROLLER_NAME} PUBLIC mc_rtc::mc_control_fsm mc_rtc::mc_rtc_ros)
 target_link_libraries(${CONTROLLER_NAME} PUBLIC pendulum_feasibility_solver::pendulum_feasibility_solver)
+
+if(ISMPC_WITH_POLICY)
+  # PRIVATE: consumers (Cython bindings, states) never see ORT headers.
+  target_link_libraries(${CONTROLLER_NAME} PRIVATE onnxruntime::onnxruntime)
+  target_compile_definitions(${CONTROLLER_NAME} PRIVATE ISMPC_WITH_POLICY=1)
+  # Run from the build tree (fetched dir) and from the install tree (next to the controller lib).
+  set_property(TARGET ${CONTROLLER_NAME} APPEND PROPERTY BUILD_RPATH "${ISMPC_ORT_LIB_DIR}")
+  set_property(TARGET ${CONTROLLER_NAME} APPEND PROPERTY INSTALL_RPATH "$ORIGIN")
+  # Ship libonnxruntime.so* (symlinks preserved) next to libismpc_walking.so.
+  install(DIRECTORY "${ISMPC_ORT_LIB_DIR}/" DESTINATION ${MC_RTC_LIBDIR}
+          FILES_MATCHING PATTERN "libonnxruntime*.so*")
+endif()
 
 install(TARGETS ${CONTROLLER_NAME} DESTINATION ${MC_RTC_LIBDIR})
 
