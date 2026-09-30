@@ -424,6 +424,23 @@ protected:
 
   void Stabilizer_GUI(mc_rbdyn::lipm_stabilizer::StabilizerConfiguration & config, std::string name);
 
+  /**
+   * @brief CoM linear velocity of the estimator-updated robot, in BASE (body)
+   * axes. Single source for the RL observation "com_lin_vel": used by training
+   * (datastore getter below) and, later, the deployed policy runner.
+   * realRobot().comVelocity() is the same signal the MPC state uses
+   * (mpc_state_.v_c_k) but is expressed in WORLD axes, so it is rotated into
+   * the base frame here (sva: posW().rotation() is world->body).
+   * [U] Body-frame choice (matches the old base_lin_vel term, so the policy
+   * stays heading-invariant) and whether the training pipeline makes this a
+   * real estimate or ground truth -- see the debug_est_com_vel_* plots.
+   */
+  Eigen::Vector3d estimatedComLinVel() const
+  {
+    const auto & robot = realRobot();
+    return robot.posW().rotation() * robot.comVelocity();
+  }
+
   void create_datastore()
   {
 
@@ -482,6 +499,9 @@ protected:
     // an observation input -- see user_reference_velocity's declaration.
     datastore().make_call("ismpc_walking::get_user_ref_vel",
                           [this]() -> const Eigen::Vector3d & { return user_reference_velocity; });
+    // Estimated CoM linear velocity, base axes (RL observation "com_lin_vel"); by value.
+    datastore().make_call("ismpc_walking::get_com_lin_vel",
+                          [this]() -> Eigen::Vector3d { return estimatedComLinVel(); });
     datastore().make_call("ismpc_walking::set_ref_pose", [this](sva::PTransformd pose) {
       target_pose_ = pose;
       velocityControl = false;
