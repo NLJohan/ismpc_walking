@@ -2,11 +2,13 @@
 
 #include "ismpc_walking/policy/OnnxBackend.h"
 
+#include <mc_rtc/gui.h>
 #include <mc_rtc/logging.h>
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <limits>
 
 #ifdef ISMPC_WITH_POLICY
@@ -49,7 +51,8 @@ std::string PolicyRunner::onnxRuntimeVersion()
 #endif
 }
 
-PolicyRunner::PolicyRunner(Options options) : options_(std::move(options))
+PolicyRunner::PolicyRunner(Options options)
+: options_(std::move(options)), library_(options_.dir), selected_(options_.file)
 {
   if(builtWithOnnxRuntime())
   {
@@ -77,6 +80,8 @@ bool PolicyRunner::fail(const std::string & path, const std::string & msg)
   backend_.reset();
   contract_ = PolicyContract{};
   loadedFile_.clear();
+  benchAvgUs_ = benchMaxUs_ = 0;
+  benchRuns_ = 0;
   state_ = PolicyState::NoPolicy;
   lastError_ = msg;
   mc_rtc::log::error("[ismpc_policy] load failed ({}): {}", path, msg);
@@ -94,6 +99,8 @@ bool PolicyRunner::unload()
   contract_ = PolicyContract{};
   loadedFile_.clear();
   lastError_.clear();
+  benchAvgUs_ = benchMaxUs_ = 0;
+  benchRuns_ = 0;
   state_ = PolicyState::NoPolicy;
   return true;
 }
@@ -156,6 +163,9 @@ bool PolicyRunner::load(const std::string & file)
   contract_ = std::move(contract);
   loadedFile_ = path;
   lastError_.clear();
+  benchAvgUs_ = sumUs / kBenchRuns;
+  benchMaxUs_ = maxUs;
+  benchRuns_ = kBenchRuns;
   state_ = PolicyState::Ready;
   mc_rtc::log::info(
       "[ismpc_policy] state=Ready: {} | checkpoint {} iteration {} | obs {} -> action {} | latch {} x {} s | "
@@ -168,7 +178,101 @@ bool PolicyRunner::load(const std::string & file)
 
 void PolicyRunner::tick() noexcept
 {
+  if(guiRebuildPending_)
+  {
+    guiRebuildPending_ = false;
+    try
+    {
+      if(gui_)
+      {
+        gui_->removeCategory(guiCategory_);
+        buildGui();
+      }
+    }
+    catch(const std::exception & e)
+    {
+      mc_rtc::log::error("[ismpc_policy] GUI rebuild failed: {}", e.what());
+    }
+    catch(...)
+    {
+      mc_rtc::log::error("[ismpc_policy] GUI rebuild failed");
+    }
+  }
   if(state_ != PolicyState::Active && state_ != PolicyState::Releasing) { return; }
+}
+
+bool PolicyRunner::setActive(bool on)
+{
+  if(on) { mc_rtc::log::warning("[ismpc_policy] the policy cannot be activated yet (not implemented in this build step)"); }
+  return false;
+}
+
+void PolicyRunner::addGui(mc_rtc::gui::StateBuilder & gui, const std::vector<std::string> & category)
+{
+  gui_ = &gui;
+  guiCategory_ = category;
+  buildGui();
+}
+
+void PolicyRunner::buildGui()
+{
+  auto busy = [this]() { return state_ == PolicyState::Active || state_ == PolicyState::Releasing; };
+  gui_->addElement(
+      guiCategory_,
+      mc_rtc::gui::Checkbox(
+          "Policy", [this]() { return state_ == PolicyState::Active; },
+          [this]() { setActive(state_ != PolicyState::Active); }),
+      mc_rtc::gui::ComboInput(
+          "Policy file", library_.files(), [this]() { return selected_; },
+          [this, busy](const std::string & f) {
+            if(busy())
+            {
+              mc_rtc::log::warning("[ismpc_policy] cannot change the policy file while {}", toString(state_));
+              return;
+            }
+            selected_ = f;
+            load(f);
+          }),
+      mc_rtc::gui::Button("Refresh list",
+                          [this]() {
+                            library_.refresh();
+                            guiRebuildPending_ = true; // dropdown values are fixed at creation: rebuilt in tick()
+                          }),
+      mc_rtc::gui::Button("Reload",
+                          [this]() {
+                            if(selected_.empty())
+                            {
+                              mc_rtc::log::warning("[ismpc_policy] Reload: no policy file selected");
+                              return;
+                            }
+                            load(selected_);
+                          }),
+      mc_rtc::gui::Label("State", [this]() { return std::string(toString(state_)); }),
+      mc_rtc::gui::Label("Last error", [this]() { return lastError_.empty() ? std::string("none") : lastError_; }),
+      mc_rtc::gui::Label("Loaded file", [this]() { return loadedFile_.empty() ? std::string("-") : loadedFile_; }),
+      mc_rtc::gui::Label("Observation size",
+                         [this]() { return contract() ? std::to_string(contract_.obs_dim) : std::string("-"); }),
+      mc_rtc::gui::Label("Action size",
+                         [this]() { return contract() ? std::to_string(contract_.action_dim) : std::string("-"); }),
+      mc_rtc::gui::Label("Latch period",
+                         [this]() {
+                           if(!contract()) { return std::string("-"); }
+                           char buf[96];
+                           std::snprintf(buf, sizeof(buf), "%d x %g s = %g ms", contract_.latch_ticks,
+                                         contract_.controller_dt, 1000. * contract_.latch_ticks * contract_.controller_dt);
+                           return std::string(buf);
+                         }),
+      mc_rtc::gui::Label("Checkpoint iteration",
+                         [this]() {
+                           return contract() ? contract_.checkpoint_stem + " / " + std::to_string(contract_.iteration)
+                                             : std::string("-");
+                         }),
+      mc_rtc::gui::Label("Inference time avg / max (us, at load)", [this]() {
+        if(benchRuns_ == 0) { return std::string("-"); }
+        char buf[96];
+        std::snprintf(buf, sizeof(buf), "%.0f / %.0f (%d runs)", benchAvgUs_, benchMaxUs_, benchRuns_);
+        return std::string(buf);
+      }));
 }
 
 } // namespace ismpc_walking::policy

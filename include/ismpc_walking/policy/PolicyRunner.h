@@ -2,6 +2,9 @@
 
 #include "ismpc_walking/policy/PolicyBackend.h"
 #include "ismpc_walking/policy/PolicyContract.h"
+#include "ismpc_walking/policy/PolicyLibrary.h"
+
+#include <mc_rtc/gui/StateBuilder.h>
 
 #include <memory>
 #include <string>
@@ -24,8 +27,8 @@ const char * toString(PolicyState s) noexcept;
 /**
  * The only policy object Walking_controller knows about.
  *
- * Step 3: can load and validate a model (never throws, never moves the robot).
- * tick() is still a no-op.
+ * Step 4: can load and validate a model (never throws, never moves the robot) and shows it in the GUI
+ * (file dropdown, Refresh/Reload, status labels). tick() only serves deferred GUI rebuilds.
  */
 class PolicyRunner
 {
@@ -54,8 +57,17 @@ public:
   /** Drops the loaded model (back to NoPolicy, lastError cleared). Refused while Active/Releasing. */
   bool unload();
 
-  /** Called once per controller step from run(). No-op unless Active/Releasing. */
+  /** Called once per controller step from run(). Nothing to do unless Active/Releasing (or a GUI rebuild is pending). */
   void tick() noexcept;
+
+  /**
+   * Adds the Policy GUI under `category` (checkbox, file dropdown, Refresh/Reload, status labels).
+   * Call once, after the GUI exists. `gui` must outlive this object's use of it (same controller).
+   */
+  void addGui(mc_rtc::gui::StateBuilder & gui, const std::vector<std::string> & category);
+
+  /** GUI "Policy" checkbox. Step 4: always refused, nothing can go Active yet. Returns whether it was accepted. */
+  bool setActive(bool on);
 
   PolicyState state() const noexcept { return state_; }
   const std::string & lastError() const noexcept { return lastError_; }
@@ -74,8 +86,16 @@ public:
 private:
   bool fail(const std::string & path, const std::string & msg);
   std::string resolve(const std::string & file) const;
+  void buildGui();
 
   Options options_;
+  PolicyLibrary library_;
+  std::string selected_; // file last picked/attempted (what the dropdown shows)
+  double benchAvgUs_ = 0, benchMaxUs_ = 0; // load-time inference benchmark
+  int benchRuns_ = 0;
+  mc_rtc::gui::StateBuilder * gui_ = nullptr;
+  std::vector<std::string> guiCategory_;
+  bool guiRebuildPending_ = false; // rebuilt from tick(): never remove GUI elements from inside their own callback
   PolicyState state_ = PolicyState::NoPolicy;
   std::string lastError_;
   std::string loadedFile_;

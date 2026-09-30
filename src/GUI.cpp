@@ -1,4 +1,5 @@
 #include "../include/ismpc_walking/Walking_controller.h"
+#include "ismpc_walking/policy/PolicyRunner.h"
 
 inline double floorn(double x, int n)
 {
@@ -619,6 +620,8 @@ void Walking_controller::addToGUI()
           "Stop", [this]() -> bool { return debugStop; }, [this]() { debugStop = !debugStop; }),
       mc_rtc::gui::Checkbox(
           "Double Support", [this]() -> bool { return debugDblSupp; }, [this]() { debugDblSupp = !debugDblSupp; }));
+
+  if(policy_) { policy_->addGui(*gui(), {"ismpc_walking", "Policy"}); }
 }
 
 void Walking_controller::add_ISMPC_Config_GUI()

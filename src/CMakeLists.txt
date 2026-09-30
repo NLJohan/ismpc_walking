@@ -10,6 +10,7 @@ set(controller_SRC
   Polygon.cpp
   policy/PolicyContract.cpp
   policy/OnnxBackend.cpp
+  policy/PolicyLibrary.cpp
   policy/PolicyRunner.cpp
 )
 
@@ -23,6 +24,7 @@ set(controller_HDR
   ../include/ismpc_walking/policy/PolicyContract.h
   ../include/ismpc_walking/policy/PolicyBackend.h
   ../include/ismpc_walking/policy/OnnxBackend.h
+  ../include/ismpc_walking/policy/PolicyLibrary.h
   ../include/ismpc_walking/policy/PolicyRunner.h
 )
 
