@@ -1,5 +1,6 @@
 #include "ismpc_walking/policy/PolicyRunner.h"
 
+#include "ismpc_walking/policy/ActionDecoder.h"
 #include "ismpc_walking/policy/OnnxBackend.h"
 
 #include <mc_rtc/gui.h>
@@ -9,6 +10,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <limits>
 
 #ifdef ISMPC_WITH_POLICY
@@ -173,6 +175,22 @@ bool PolicyRunner::load(const std::string & file)
       loadedFile_, contract_.checkpoint_stem, contract_.iteration, contract_.obs_dim, contract_.action_dim,
       contract_.latch_ticks, contract_.controller_dt,
       contract_.action.twist_max_delta_per_latch ? "yes" : "none", sumUs / kBenchRuns, maxUs, kBenchRuns);
+
+  // TEMPORARY (step 5 parity test, removed in step 9): replay a raw action file through the ActionDecoder.
+  if(const char * parityIn = std::getenv("ISMPC_DECODER_PARITY_IN"))
+  {
+    const char * parityOut = std::getenv("ISMPC_DECODER_PARITY_OUT");
+    std::string perr;
+    if(!parityOut) { perr = "ISMPC_DECODER_PARITY_OUT is not set"; }
+    if(parityOut && runDecoderParity(contract_, parityIn, parityOut, perr))
+    {
+      mc_rtc::log::info("[ismpc_policy] decoder parity: wrote {}", parityOut);
+    }
+    else
+    {
+      mc_rtc::log::error("[ismpc_policy] decoder parity failed: {}", perr);
+    }
+  }
   return true;
 }
 

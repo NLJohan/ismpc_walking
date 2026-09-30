@@ -11,6 +11,8 @@ set(controller_SRC
   policy/PolicyContract.cpp
   policy/OnnxBackend.cpp
   policy/PolicyLibrary.cpp
+  policy/ActionDecoder.cpp
+  policy/ActionDecoderParity.cpp
   policy/PolicyRunner.cpp
 )
 
@@ -25,6 +27,7 @@ set(controller_HDR
   ../include/ismpc_walking/policy/PolicyBackend.h
   ../include/ismpc_walking/policy/OnnxBackend.h
   ../include/ismpc_walking/policy/PolicyLibrary.h
+  ../include/ismpc_walking/policy/ActionDecoder.h
   ../include/ismpc_walking/policy/PolicyRunner.h
 )
 
