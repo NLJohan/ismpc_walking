@@ -16,6 +16,11 @@
 #include <string>
 #include <vector>
 
+namespace mc_rtc
+{
+struct Logger;
+}
+
 namespace ismpc_walking::policy
 {
 
@@ -88,6 +93,13 @@ public:
    */
   bool setActive(bool on);
 
+  /**
+   * Registers the policy entries in the mc_rtc log (inputs, raw outputs, physical outputs, see rebuildLog()). Call
+   * once from Walking_controller::AddToLog(), on the controller thread. The entries follow the loaded model: they are
+   * rebuilt from the contract on every load / unload, so a changed observation or action needs no code change here.
+   */
+  void addLog(mc_rtc::Logger & logger);
+
   PolicyState state() const noexcept { return state_; }
   const std::string & lastError() const noexcept { return lastError_; }
   const std::string & loadedFile() const noexcept { return loadedFile_; }
@@ -106,6 +118,7 @@ private:
   bool fail(const std::string & path, const std::string & msg);
   std::string resolve(const std::string & file) const;
   void buildGui();
+  void rebuildLog() noexcept; // controller thread (from tick()): drops and re-adds this object's log entries
   void debugTick() noexcept; // TEMPORARY (step 6): shadow inference + z-score monitor + 1 Hz log while Ready
   void activate() noexcept;  // controller thread: Ready -> Active (or refuse, with lastError)
   void activeTick() noexcept; // controller thread: the Active loop
@@ -119,6 +132,8 @@ private:
   int benchRuns_ = 0;
   mc_rtc::gui::StateBuilder * gui_ = nullptr;
   std::vector<std::string> guiCategory_;
+  mc_rtc::Logger * logger_ = nullptr;
+  bool logRebuildPending_ = false; // set by load / unload / failed load, served by tick()
   bool guiRebuildPending_ = false; // rebuilt from tick(): never remove GUI elements from inside their own callback
   std::atomic<PolicyState> state_{PolicyState::NoPolicy}; // read from the GUI/joystick side too
   ControlSink * sink_ = nullptr; // not owned: same object as source_

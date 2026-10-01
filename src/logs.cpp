@@ -1,4 +1,5 @@
 #include "../include/ismpc_walking/Walking_controller.h"
+#include "../include/ismpc_walking/policy/PolicyRunner.h"
 
 void Walking_controller::AddToLog()
 {
@@ -170,4 +171,7 @@ void Walking_controller::AddToLog()
       return 0.;
     }
   });
+
+  // ONNX policy: every input term, the raw outputs and the physical outputs (entries follow the loaded model).
+  if(policy_) { policy_->addLog(logger()); }
 }

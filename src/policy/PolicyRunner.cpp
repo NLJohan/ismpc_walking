@@ -4,7 +4,10 @@
 #include "ismpc_walking/policy/OnnxBackend.h"
 
 #include <mc_rtc/gui.h>
+#include <mc_rtc/log/Logger.h>
 #include <mc_rtc/logging.h>
+
+#include <Eigen/Core>
 
 #include <algorithm>
 #include <array>
@@ -96,6 +99,7 @@ bool PolicyRunner::fail(const std::string & path, const std::string & msg)
   benchAvgUs_ = benchMaxUs_ = 0;
   benchRuns_ = 0;
   state_ = PolicyState::NoPolicy;
+  logRebuildPending_ = true;
   lastError_ = msg;
   mc_rtc::log::error("[ismpc_policy] load failed ({}): {}", path, msg);
   return false;
@@ -123,6 +127,7 @@ bool PolicyRunner::unload()
   benchAvgUs_ = benchMaxUs_ = 0;
   benchRuns_ = 0;
   state_ = PolicyState::NoPolicy;
+  logRebuildPending_ = true;
   return true;
 }
 
@@ -199,6 +204,7 @@ bool PolicyRunner::load(const std::string & file)
   benchMaxUs_ = maxUs;
   benchRuns_ = kBenchRuns;
   state_ = PolicyState::Ready;
+  logRebuildPending_ = true;
   mc_rtc::log::info(
       "[ismpc_policy] state=Ready: {} | checkpoint {} iteration {} | obs {} -> action {} | latch {} x {} s | "
       "twist rate limit: {} | inference avg {:.0f} us, max {:.0f} us over {} runs",
@@ -246,6 +252,7 @@ void PolicyRunner::tick() noexcept
       mc_rtc::log::error("[ismpc_policy] GUI rebuild failed");
     }
   }
+  if(logRebuildPending_) { rebuildLog(); }
   if(source_ && state_ != PolicyState::NoPolicy) { source_->sample(); } // every step: keeps the datastore-lag history
   switch(request_.exchange(0))
   {
@@ -573,6 +580,114 @@ void PolicyRunner::activeTick() noexcept
   catch(...)
   {
     release("unknown exception in the Active loop", true);
+  }
+}
+
+void PolicyRunner::addLog(mc_rtc::Logger & logger)
+{
+  logger_ = &logger;
+  logRebuildPending_ = true; // a model loaded at start-up is registered on the next tick
+}
+
+// Log entries (all prefixed ismpc_policy_), rebuilt from the loaded contract:
+//   ismpc_policy_state, _latch_count                 always (a change of latch_count marks a latch step)
+//   ismpc_policy_in_<term>                           one per observation term, named and sized by the builder
+//   ismpc_policy_in_full                             the whole observation vector, exactly as the network got it
+//   ismpc_policy_joint_names                         contract joint order (for joint_pos / joint_vel elements)
+//   ismpc_policy_out_raw                             the 9 raw network outputs, ismpc_policy_out_raw_layout names them
+//   ismpc_policy_out_phys, _out_phys_<field>         the same action mapped to physical values (kPhys below)
+// The observation and the actions only change on latch steps (every latch_ticks controller steps); in between the
+// last values are held. Adding an observation term needs no change here. Adding an action field = one line in kPhys
+// and in kRawNames. Runs on the controller thread (the logger is read there too).
+void PolicyRunner::rebuildLog() noexcept
+{
+  logRebuildPending_ = false;
+  if(!logger_) { return; }
+  try
+  {
+    logger_->removeLogEntries(this);
+    logger_->addLogEntry("ismpc_policy_state", this,
+                         [this]() -> double { return static_cast<double>(static_cast<int>(state_.load())); });
+    logger_->addLogEntry("ismpc_policy_latch_count", this, [this]() -> double { return static_cast<double>(latchCount_); });
+    if(state_ == PolicyState::NoPolicy || !builder_ || !decoder_) { return; }
+
+    // ---- inputs ----
+    logger_->addLogEntry("ismpc_policy_in_full", this, [this]() -> Eigen::VectorXd {
+      return Eigen::Map<const Eigen::VectorXd>(obs_.data(), static_cast<Eigen::Index>(obs_.size()));
+    });
+    for(const auto & t : builder_->terms())
+    {
+      const size_t off = static_cast<size_t>(t.offset);
+      const size_t dim = static_cast<size_t>(t.dim);
+      const std::string name = "ismpc_policy_in_" + t.name;
+      if(dim == 1)
+      {
+        logger_->addLogEntry(name, this, [this, off]() -> double { return off < obs_.size() ? obs_[off] : 0.; });
+      }
+      else
+      {
+        logger_->addLogEntry(name, this, [this, off, dim]() -> Eigen::VectorXd {
+          Eigen::VectorXd v = Eigen::VectorXd::Zero(static_cast<Eigen::Index>(dim));
+          if(off + dim <= obs_.size())
+          {
+            for(size_t i = 0; i < dim; ++i) { v[static_cast<Eigen::Index>(i)] = obs_[off + i]; }
+          }
+          return v;
+        });
+      }
+    }
+    std::string joints;
+    for(const auto & j : contract_.joint_names) { joints += (joints.empty() ? "" : ",") + j; }
+    logger_->addLogEntry("ismpc_policy_joint_names", this, [joints]() -> std::string { return joints; });
+
+    // ---- raw outputs ----
+    static const char * const kRawNames = "offset,frequency,sin_amp,cos_amp,walk_gate,ts,vx,vy,omega"; // raw index order
+    logger_->addLogEntry("ismpc_policy_out_raw", this, [this]() -> Eigen::VectorXd {
+      return Eigen::Map<const Eigen::VectorXd>(lastRaw_.data(), static_cast<Eigen::Index>(lastRaw_.size()));
+    });
+    logger_->addLogEntry("ismpc_policy_out_raw_layout", this, []() -> std::string { return kRawNames; });
+
+    // ---- physical outputs (the decoder's latched command) ----
+    using Getter = double (*)(const DecodedAction &);
+    struct Phys
+    {
+      const char * name;
+      Getter get;
+    };
+    static const Phys kPhys[] = {
+        {"offset", [](const DecodedAction & d) { return d.offset; }},
+        {"frequency", [](const DecodedAction & d) { return d.frequency; }},
+        {"sin_amp", [](const DecodedAction & d) { return d.sin_amp; }},
+        {"cos_amp", [](const DecodedAction & d) { return d.cos_amp; }},
+        {"walk", [](const DecodedAction & d) { return d.walk ? 1.0 : 0.0; }},
+        {"ts", [](const DecodedAction & d) { return d.ts; }},
+        {"vx", [](const DecodedAction & d) { return d.twist[0]; }},
+        {"vy", [](const DecodedAction & d) { return d.twist[1]; }},
+        {"omega", [](const DecodedAction & d) { return d.twist[2]; }},
+    };
+    for(const auto & p : kPhys)
+    {
+      const Getter get = p.get;
+      logger_->addLogEntry(std::string("ismpc_policy_out_phys_") + p.name, this,
+                           [this, get]() -> double { return decoder_ ? get(decoder_->current()) : 0.; });
+    }
+    logger_->addLogEntry("ismpc_policy_out_phys", this, [this]() -> Eigen::VectorXd {
+      Eigen::VectorXd v = Eigen::VectorXd::Zero(static_cast<Eigen::Index>(std::size(kPhys)));
+      if(decoder_)
+      {
+        const auto & d = decoder_->current();
+        for(size_t i = 0; i < std::size(kPhys); ++i) { v[static_cast<Eigen::Index>(i)] = kPhys[i].get(d); }
+      }
+      return v;
+    });
+  }
+  catch(const std::exception & e)
+  {
+    mc_rtc::log::error("[ismpc_policy] log entries not registered: {}", e.what());
+  }
+  catch(...)
+  {
+    mc_rtc::log::error("[ismpc_policy] log entries not registered");
   }
 }
 
