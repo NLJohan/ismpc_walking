@@ -268,8 +268,9 @@ Walking_controller::Walking_controller(mc_rbdyn::RobotModulePtr rm,
       policyOptions.file = policyConfig("file", std::string(""));
       policyOptions.debug_no_apply = policyConfig("debug_no_apply", false); // TEMPORARY, removed in step 9
     }
-    policy_ = std::make_unique<ismpc_walking::policy::PolicyRunner>(
-        policyOptions, std::make_unique<ismpc_walking::policy::ControllerAdapter>(*this));
+    auto adapter = std::make_unique<ismpc_walking::policy::ControllerAdapter>(*this);
+    auto * sink = adapter.get(); // write side of the same object; the runner owns it as its StateSource
+    policy_ = std::make_unique<ismpc_walking::policy::PolicyRunner>(policyOptions, std::move(adapter), sink);
   }
   deactivate();
   mc_rtc::log::success("ismpc_walking controller init done ");
@@ -289,6 +290,13 @@ Walking_controller::Walking_controller(mc_rbdyn::RobotModulePtr rm,
     user_reference_velocity = config("walking_controller")("auto_start")("speed");
     controller_config_.Double_Step_Ratio = config("walking_controller")("auto_start")("double_support_ratio");
   }
+}
+
+bool Walking_controller::blockedByPolicy(const char * what) noexcept
+{
+  if(!policy_ || !policy_->ownsWalking()) { return false; }
+  mc_rtc::log::warning("[ismpc_policy] {} ignored: the policy owns walking (untick Policy in the GUI first)", what);
+  return true;
 }
 
 bool Walking_controller::wait_for_mpc_thread()

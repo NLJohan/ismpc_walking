@@ -54,10 +54,11 @@ std::string PolicyRunner::onnxRuntimeVersion()
 #endif
 }
 
-PolicyRunner::PolicyRunner(Options options, std::unique_ptr<StateSource> source)
+PolicyRunner::PolicyRunner(Options options, std::unique_ptr<StateSource> source, ControlSink * sink)
 : options_(std::move(options)), library_(options_.dir), selected_(options_.file)
 {
   source_ = std::move(source);
+  sink_ = sink;
   if(builtWithOnnxRuntime())
   {
     mc_rtc::log::info("[ismpc_policy] state=NoPolicy, built with ONNX Runtime {}", onnxRuntimeVersion());
@@ -246,8 +247,16 @@ void PolicyRunner::tick() noexcept
     }
   }
   if(source_ && state_ != PolicyState::NoPolicy) { source_->sample(); } // every step: keeps the datastore-lag history
-  if(state_ == PolicyState::Ready && options_.debug_no_apply) { debugTick(); }
-  if(state_ != PolicyState::Active && state_ != PolicyState::Releasing) { return; }
+  switch(request_.exchange(0))
+  {
+    case 1: activate(); break;
+    case 2:
+      if(state_ == PolicyState::Active) { release("the policy was switched off", false); }
+      break;
+    default: break;
+  }
+  if(state_ == PolicyState::Active) { activeTick(); }
+  else if(state_ == PolicyState::Ready && options_.debug_no_apply) { debugTick(); }
 }
 
 namespace
@@ -428,10 +437,164 @@ void PolicyRunner::debugTick() noexcept
   }
 }
 
+void PolicyRunner::activate() noexcept
+{
+  try
+  {
+    auto refuse = [this](const std::string & why) {
+      lastError_ = "cannot activate: " + why;
+      mc_rtc::log::warning("[ismpc_policy] {}", lastError_);
+    };
+    if(state_ != PolicyState::Ready) { return refuse(std::string("the state is ") + toString(state_) + ", it must be Ready"); }
+    if(!sink_ || !source_ || !builder_ || !backend_ || !decoder_ || !zmon_)
+    {
+      return refuse("the runner has no controller to drive or is not fully initialised");
+    }
+    std::string err;
+    if(!sink_->canTakeOver(err)) { return refuse(err); }
+
+    // Activation is training's episode reset: counter seeded to 1 (first latch on the 10th step), command back to
+    // the reset defaults, so the first thing applied is walk off, Ts 1.1, twist 0.
+    decoder_->reset();
+    zmon_->resetRunning();
+    lastRaw_ = ActionDecoder::Raw{};
+    latchCount_ = 0;
+    inferSumUs_ = inferMaxUs_ = 0;
+    shadowError_.clear();
+    activeTicks_ = 0;
+    lastError_.clear();
+    sink_->takeOwnership();
+    state_ = PolicyState::Active;
+    mc_rtc::log::info("[ismpc_policy] state=Active: the policy owns walking, Ts and the velocity source");
+  }
+  catch(...)
+  {
+  }
+}
+
+void PolicyRunner::release(const std::string & reason, bool failure) noexcept
+{
+  try
+  {
+    if(state_ != PolicyState::Active) { return; }
+    if(sink_)
+    {
+      if(failure) { sink_->applyWalkGate(false); } // stop walking
+      sink_->releaseOwnership();
+    }
+    state_ = PolicyState::Ready;
+    if(failure)
+    {
+      lastError_ = reason;
+      mc_rtc::log::error("[ismpc_policy] FAILURE, back to Ready (Stop set): {}", reason);
+    }
+    else
+    {
+      mc_rtc::log::info("[ismpc_policy] state=Ready: {}", reason);
+    }
+  }
+  catch(...)
+  {
+  }
+}
+
+// The Active loop (step 7A: ownership and the walk gate only; sine, Ts and twist come in 7B). Per controller step:
+//  1. apply the command that was latched on a PREVIOUS step (training hands a latched action to the controller one
+//     control period late, see B.10 item 5);
+//  2. advance the latch counter; on a latch step read the robot, build the observation, run the network, latch.
+// Any failure releases the policy at once (release(..., true)).
+void PolicyRunner::activeTick() noexcept
+{
+  try
+  {
+    if(!source_ || !sink_ || !builder_ || !backend_ || !decoder_ || !zmon_)
+    {
+      release("internal error: the runner is not fully initialised", true);
+      return;
+    }
+    const long every = std::max<long>(1, std::lround(1.0 / options_.controller_dt));
+    ++activeTicks_;
+
+    sink_->applyWalkGate(decoder_->current().walk);
+
+    if(decoder_->advance())
+    {
+      RobotState s;
+      std::string err;
+      if(!source_->read(s, err))
+      {
+        release(err, true);
+        return;
+      }
+      if(!builder_->build(s, decoder_->current(), obs_, err) || !ObservationBuilder::toFloat(obs_, obsF_, err))
+      {
+        release(err, true);
+        return;
+      }
+      std::array<float, PolicyContract::kActionDim> act{};
+      const auto t0 = std::chrono::steady_clock::now();
+      const bool ran = backend_->infer(obsF_.data(), act.data(), err);
+      const double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count();
+      if(!ran)
+      {
+        release("inference failed: " + err, true);
+        return;
+      }
+      ActionDecoder::Raw raw{};
+      for(size_t i = 0; i < raw.size(); ++i) { raw[i] = static_cast<double>(act[i]); }
+      if(!decoder_->latch(raw))
+      {
+        release("the network returned a non finite value", true);
+        return;
+      }
+      lastRaw_ = raw;
+      ++latchCount_;
+      inferSumUs_ += us;
+      inferMaxUs_ = std::max(inferMaxUs_, us);
+      zmon_->update(obs_); // obs_ is still the observation the network just saw
+    }
+
+    if(activeTicks_ % every == 0)
+    {
+      const auto & d = decoder_->current();
+      const size_t nOff = zmon_->available() ? zmon_->offenders().size() : size_t(0);
+      mc_rtc::log::info(
+          "[ismpc_policy] active | latches {} | latched walk {} (decoded, sine/Ts/twist not applied yet: step 7B) offset "
+          "{:.3f} ts {:.3f} twist {} | elements |z| > {:.0f}: {} | inference avg {:.1f} us max {:.1f} us",
+          latchCount_, d.walk ? 1 : 0, d.offset, d.ts, fmtN(d.twist.data(), 3), ZScoreMonitor::kWarn, nOff,
+          latchCount_ > 0 ? inferSumUs_ / static_cast<double>(latchCount_) : 0.0, inferMaxUs_);
+    }
+  }
+  catch(const std::exception & e)
+  {
+    release(std::string("exception in the Active loop: ") + e.what(), true);
+  }
+  catch(...)
+  {
+    release("unknown exception in the Active loop", true);
+  }
+}
+
 bool PolicyRunner::setActive(bool on)
 {
-  if(on) { mc_rtc::log::warning("[ismpc_policy] the policy cannot be activated yet (not implemented in this build step)"); }
-  return false;
+  if(on)
+  {
+    if(state_ != PolicyState::Ready)
+    {
+      mc_rtc::log::warning("[ismpc_policy] cannot activate: the state is {}, it must be Ready", toString(state_));
+      return false;
+    }
+    if(!sink_)
+    {
+      mc_rtc::log::warning("[ismpc_policy] cannot activate: no controller to drive");
+      return false;
+    }
+    request_ = 1;
+    return true;
+  }
+  if(state_ != PolicyState::Active) { return false; }
+  request_ = 2;
+  return true;
 }
 
 void PolicyRunner::addGui(mc_rtc::gui::StateBuilder & gui, const std::vector<std::string> & category)

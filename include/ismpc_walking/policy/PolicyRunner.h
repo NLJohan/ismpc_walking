@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ismpc_walking/policy/ActionDecoder.h"
+#include "ismpc_walking/policy/ControlSink.h"
 #include "ismpc_walking/policy/PolicyBackend.h"
 #include "ismpc_walking/policy/PolicyContract.h"
 #include "ismpc_walking/policy/PolicyLibrary.h"
@@ -10,6 +11,7 @@
 
 #include <mc_rtc/gui/StateBuilder.h>
 
+#include <atomic>
 #include <memory>
 #include <string>
 #include <vector>
@@ -22,7 +24,7 @@ enum class PolicyState
 {
   NoPolicy, // nothing loaded (see lastError() if a load was attempted)
   Ready,    // loaded and validated, not driving
-  Active,   // driving the controller        (not reachable yet)
+  Active,   // driving the controller (step 7A: ownership and the walk gate only)
   Releasing // ramping back to manual        (not reachable yet)
 };
 
@@ -46,8 +48,12 @@ public:
     bool debug_no_apply = false; // TEMPORARY (removed in step 9): log the observation while Ready, never move the robot
   };
 
-  /** `source` (may be null) provides the robot state for the observation; the runner owns it. */
-  explicit PolicyRunner(Options options, std::unique_ptr<StateSource> source = nullptr);
+  /**
+   * `source` (may be null) provides the robot state for the observation; the runner owns it.
+   * `sink` (may be null, then the policy can never become Active) is the write side of the same adapter;
+   * it is NOT owned and must live as long as `source`.
+   */
+  explicit PolicyRunner(Options options, std::unique_ptr<StateSource> source = nullptr, ControlSink * sink = nullptr);
   ~PolicyRunner();
 
   PolicyRunner(const PolicyRunner &) = delete;
@@ -63,7 +69,10 @@ public:
   /** Drops the loaded model (back to NoPolicy, lastError cleared). Refused while Active/Releasing. */
   bool unload();
 
-  /** Called once per controller step from run(). Nothing to do unless Active/Releasing (or a GUI rebuild is pending). */
+  /**
+   * Called once per controller step from run(), on the controller thread. Serves GUI rebuilds and activation
+   * requests, then runs the shadow loop (Ready + debug_no_apply) or the Active loop.
+   */
   void tick() noexcept;
 
   /**
@@ -72,7 +81,11 @@ public:
    */
   void addGui(mc_rtc::gui::StateBuilder & gui, const std::vector<std::string> & category);
 
-  /** GUI "Policy" checkbox. Step 4: always refused, nothing can go Active yet. Returns whether it was accepted. */
+  /**
+   * GUI "Policy" checkbox. Safe from any thread: it only validates the state and queues a request, which tick()
+   * carries out on the controller thread. Returns whether the request was accepted (a refusal is logged;
+   * activation preconditions that depend on the controller are checked in tick() and reported in lastError()).
+   */
   bool setActive(bool on);
 
   PolicyState state() const noexcept { return state_; }
@@ -80,8 +93,8 @@ public:
   const std::string & loadedFile() const noexcept { return loadedFile_; }
   const PolicyContract * contract() const noexcept { return state_ == PolicyState::NoPolicy ? nullptr : &contract_; }
 
-  /** True once the policy owns walking / Ts / twist (used by the GUI guards later). */
-  bool ownsWalking() const noexcept { return false; }
+  /** True while the policy owns walking / Ts / twist (read by the GUI, joystick and datastore guards). */
+  bool ownsWalking() const noexcept { return state_ == PolicyState::Active || state_ == PolicyState::Releasing; }
 
   /** True if this build links ONNX Runtime (ISMPC_WITH_POLICY=ON). */
   static bool builtWithOnnxRuntime() noexcept;
@@ -94,6 +107,10 @@ private:
   std::string resolve(const std::string & file) const;
   void buildGui();
   void debugTick() noexcept; // TEMPORARY (step 6): shadow inference + z-score monitor + 1 Hz log while Ready
+  void activate() noexcept;  // controller thread: Ready -> Active (or refuse, with lastError)
+  void activeTick() noexcept; // controller thread: the Active loop
+  // Active -> Ready at once. failure: stop walking, set lastError and log an error. Step 8 adds the ramps.
+  void release(const std::string & reason, bool failure) noexcept;
 
   Options options_;
   PolicyLibrary library_;
@@ -103,7 +120,10 @@ private:
   mc_rtc::gui::StateBuilder * gui_ = nullptr;
   std::vector<std::string> guiCategory_;
   bool guiRebuildPending_ = false; // rebuilt from tick(): never remove GUI elements from inside their own callback
-  PolicyState state_ = PolicyState::NoPolicy;
+  std::atomic<PolicyState> state_{PolicyState::NoPolicy}; // read from the GUI/joystick side too
+  ControlSink * sink_ = nullptr; // not owned: same object as source_
+  std::atomic<int> request_{0};  // 0 none, 1 activate, 2 release: set by setActive(), consumed by tick()
+  long activeTicks_ = 0;         // controller steps since activation
   std::string lastError_;
   std::string loadedFile_;
   PolicyContract contract_;

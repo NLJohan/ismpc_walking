@@ -183,4 +183,48 @@ bool ControllerAdapter::read(RobotState & out, std::string & err) noexcept
   }
 }
 
+bool ControllerAdapter::canTakeOver(std::string & err) noexcept
+{
+  try
+  {
+    if(!ctl_.MPC_thread_ready)
+    {
+      err = "the MPC thread is not ready yet";
+      return false;
+    }
+    if(!ctl_.active)
+    {
+      err = "the controller is not active (tick Active in the Walking GUI, or set walking_controller.auto_start.activate)";
+      return false;
+    }
+    return true;
+  }
+  catch(...)
+  {
+    err = "unknown error while checking the controller";
+    return false;
+  }
+}
+
+void ControllerAdapter::takeOwnership() noexcept
+{
+  if(owning_) { return; }
+  savedRlVelocityControl_ = ctl_.rlVelocityControl;
+  savedPolicyControlsTs_ = ctl_.policyControlsTs;
+  ctl_.rlVelocityControl = true;
+  ctl_.policyControlsTs = true;
+  ctl_.rl_reference_velocity.setZero(); // reset default; never leave a stale twist to the first tick
+  owning_ = true;
+}
+
+void ControllerAdapter::releaseOwnership() noexcept
+{
+  if(!owning_) { return; }
+  ctl_.rlVelocityControl = savedRlVelocityControl_;
+  ctl_.policyControlsTs = savedPolicyControlsTs_;
+  owning_ = false;
+}
+
+void ControllerAdapter::applyWalkGate(bool walk) noexcept { ctl_.SetPolicyWantsWalk(walk); }
+
 } // namespace ismpc_walking::policy

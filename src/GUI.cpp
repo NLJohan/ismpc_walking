@@ -184,13 +184,24 @@ void Walking_controller::addToGUI()
 
       mc_rtc::gui::Button("Start Move",
                           [this]() {
+                            if(blockedByPolicy("GUI Start Move"))
+                            {
+                              return;
+                            }
                             if(stabilizer_active_)
                             {
                               Stop = false;
                               compute_trajectory_once.notify_all();
                             }
                           }),
-      mc_rtc::gui::Button("Stop", [this]() { Stop = true; }),
+      mc_rtc::gui::Button("Stop",
+                          [this]() {
+                            if(blockedByPolicy("GUI Stop"))
+                            {
+                              return;
+                            }
+                            Stop = true;
+                          }),
       mc_rtc::gui::Checkbox(
           "Active", [this]() { return active; },
           [this]() {
@@ -337,7 +348,12 @@ void Walking_controller::addToGUI()
           [this](const Eigen::Vector3d & vel) { user_reference_velocity = vel; }),
       mc_rtc::gui::Checkbox(
           "RL Reference Velocity", [this]() { return rlVelocityControl; },
-          [this]() { rlVelocityControl = !rlVelocityControl; }),
+          [this]() {
+            if(!blockedByPolicy("GUI RL Reference Velocity"))
+            {
+              rlVelocityControl = !rlVelocityControl;
+            }
+          }),
       // Read-only displays, mirroring the "Next Step Timing" Label pattern
       // used elsewhere in this file (mc_rtc::gui::ArrayLabel's existence is
       // NOT confirmed against the mc_rtc version in use -- using three
@@ -352,7 +368,12 @@ void Walking_controller::addToGUI()
       mc_rtc::gui::Label("Effective reference velocity omega", [this]() { return reference_velocity.z(); }),
       mc_rtc::gui::Checkbox(
           "Ts Control Mode (RL)", [this]() { return policyControlsTs; },
-          [this]() { policyControlsTs = !policyControlsTs; }),
+          [this]() {
+            if(!blockedByPolicy("GUI Ts Control Mode (RL)"))
+            {
+              policyControlsTs = !policyControlsTs;
+            }
+          }),
       mc_rtc::gui::NumberInput(
           "Ts", [this]() -> double { return ts(); },
           [this](const double t) {

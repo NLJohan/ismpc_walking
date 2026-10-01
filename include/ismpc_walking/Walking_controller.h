@@ -228,6 +228,10 @@ public:
   }
   void start_stop() noexcept
   {
+    if(blockedByPolicy("start_stop()"))
+    {
+      return;
+    }
     if(!(Stop && !stabilizer_active_))
     {
       if(!Stop)
@@ -455,6 +459,10 @@ protected:
     datastore().make_call("ismpc_walking::robot_walking", [this]() -> bool { return Robot_Walking; });
     datastore().make_call("ismpc_walking::double_support", [this]() -> bool { return doubleSupport_state; });
     datastore().make_call("ismpc_walking::start/stop", [this]() {
+      if(blockedByPolicy("datastore ismpc_walking::start/stop"))
+      {
+        return;
+      }
       if(stabilizer_active_ && Stop)
       {
         compute_trajectory_once.notify_all();
@@ -624,6 +632,9 @@ private:
   std::unique_ptr<ismpc_walking::policy::PolicyRunner> policy_;
   // The adapter is the only policy code that reads (and, from step 7, writes) controller state.
   friend class ismpc_walking::policy::ControllerAdapter;
+  // True (with a warning naming `what`) while the policy owns walking: the manual start/stop and mode writers
+  // (GUI buttons and checkboxes, joystick A, start_stop(), the datastore entry) return early on it.
+  bool blockedByPolicy(const char * what) noexcept;
 
   std::mutex mutex_mpc_;
   MPC_state mpc_thread_state;
@@ -817,7 +828,8 @@ private:
   // ComputeWalkingTrajectory() call (not accumulated/latched across
   // solves), so it always reflects only the MOST RECENT MPC solve's
   // assessment, not history.
-  bool ismpc_wants_stop = false;
+  // Written by the MPC thread, read by the controller thread (the policy adapter): atomic.
+  std::atomic<bool> ismpc_wants_stop = false;
 
   bool Use_w = true;
   Eigen::Vector3d w_ = Eigen::Vector3d::Zero();

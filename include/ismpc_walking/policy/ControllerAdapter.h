@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ismpc_walking/policy/ControlSink.h"
 #include "ismpc_walking/policy/RobotState.h"
 
 #include <array>
@@ -13,9 +14,10 @@ namespace ismpc_walking::policy
 
 /**
  * The only policy code that touches Walking_controller (one `friend` declaration).
- * Step 6A: read side only. It never writes to the controller.
+ * Read side (StateSource): never writes to the controller.
+ * Write side (ControlSink, step 7): ownership of the velocity source and of Ts, and the walk gate.
  */
-class ControllerAdapter final : public StateSource
+class ControllerAdapter final : public StateSource, public ControlSink
 {
 public:
   explicit ControllerAdapter(Walking_controller & ctl);
@@ -23,6 +25,11 @@ public:
   bool bind(const std::vector<std::string> & contract_joints, std::string & err) override;
   void sample() noexcept override;
   bool read(RobotState & out, std::string & err) noexcept override;
+
+  bool canTakeOver(std::string & err) noexcept override;
+  void takeOwnership() noexcept override;
+  void releaseOwnership() noexcept override;
+  void applyWalkGate(bool walk) noexcept override;
 
 private:
   Walking_controller & ctl_;
@@ -37,6 +44,11 @@ private:
   };
   std::array<Sample, 3> hist_{}; // hist_[0] = this step, hist_[1] = one step ago, hist_[2] = two steps ago
   size_t filled_ = 0;            // valid entries in hist_
+
+  // Ownership (step 7): values to give back on release.
+  bool owning_ = false;
+  bool savedRlVelocityControl_ = false;
+  bool savedPolicyControlsTs_ = true;
 };
 
 } // namespace ismpc_walking::policy

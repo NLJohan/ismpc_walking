@@ -31,6 +31,7 @@ set(controller_HDR
   ../include/ismpc_walking/policy/OnnxBackend.h
   ../include/ismpc_walking/policy/PolicyLibrary.h
   ../include/ismpc_walking/policy/ActionDecoder.h
+  ../include/ismpc_walking/policy/ControlSink.h
   ../include/ismpc_walking/policy/RobotState.h
   ../include/ismpc_walking/policy/ObservationBuilder.h
   ../include/ismpc_walking/policy/ControllerAdapter.h

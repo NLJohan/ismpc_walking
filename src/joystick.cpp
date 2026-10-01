@@ -36,7 +36,11 @@ void Walking_controller::JoystickInputs()
       {
         mc_rtc::log::info("Start/Stop Walking");
 
-        if(stabilizer_active_ && Stop)
+        if(blockedByPolicy("joystick A (start/stop walking)"))
+        {
+          // the policy owns walking
+        }
+        else if(stabilizer_active_ && Stop)
         {
           compute_trajectory_once.notify_all();
           Stop = false;
