@@ -6,6 +6,7 @@
 #include "ismpc_walking/policy/PolicyLibrary.h"
 #include "ismpc_walking/policy/ObservationBuilder.h"
 #include "ismpc_walking/policy/RobotState.h"
+#include "ismpc_walking/policy/ZScoreMonitor.h"
 
 #include <mc_rtc/gui/StateBuilder.h>
 
@@ -92,7 +93,7 @@ private:
   bool fail(const std::string & path, const std::string & msg);
   std::string resolve(const std::string & file) const;
   void buildGui();
-  void debugTick() noexcept; // TEMPORARY (step 6): periodic observation log while Ready
+  void debugTick() noexcept; // TEMPORARY (step 6): shadow inference + z-score monitor + 1 Hz log while Ready
 
   Options options_;
   PolicyLibrary library_;
@@ -113,6 +114,12 @@ private:
   std::vector<double> obs_;  // observation being built (contract order), sized at load
   std::vector<float> obsF_;  // the same, cast to float32 for the network
   long debugTicks_ = 0;
+  // TEMPORARY (step 6B.2, removed in step 9): shadow inference state, only used by debugTick()
+  std::unique_ptr<ZScoreMonitor> zmon_;
+  ActionDecoder::Raw lastRaw_{}; // last raw network output
+  long latchCount_ = 0;          // shadow latches since load
+  double inferSumUs_ = 0, inferMaxUs_ = 0; // per-latch inference time (build excluded)
+  std::string shadowError_;      // last shadow failure, reported once per second, "" when fine
 };
 
 } // namespace ismpc_walking::policy

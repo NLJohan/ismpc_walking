@@ -7,6 +7,7 @@
 #include <mc_rtc/logging.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -83,8 +84,12 @@ bool PolicyRunner::fail(const std::string & path, const std::string & msg)
   backend_.reset();
   builder_.reset();
   decoder_.reset();
+  zmon_.reset();
   obs_.clear();
   obsF_.clear();
+  latchCount_ = 0;
+  inferSumUs_ = inferMaxUs_ = 0;
+  shadowError_.clear();
   contract_ = PolicyContract{};
   loadedFile_.clear();
   benchAvgUs_ = benchMaxUs_ = 0;
@@ -105,8 +110,12 @@ bool PolicyRunner::unload()
   backend_.reset();
   builder_.reset();
   decoder_.reset();
+  zmon_.reset();
   obs_.clear();
   obsF_.clear();
+  latchCount_ = 0;
+  inferSumUs_ = inferMaxUs_ = 0;
+  shadowError_.clear();
   contract_ = PolicyContract{};
   loadedFile_.clear();
   lastError_.clear();
@@ -181,6 +190,8 @@ bool PolicyRunner::load(const std::string & file)
   obsF_.assign(static_cast<size_t>(contract.obs_dim), 0.f);
   contract_ = std::move(contract);
   decoder_ = std::make_unique<ActionDecoder>(contract_);
+  zmon_ = std::make_unique<ZScoreMonitor>(contract_, builder_->terms());
+  debugTicks_ = 0;
   loadedFile_ = path;
   lastError_.clear();
   benchAvgUs_ = sumUs / kBenchRuns;
@@ -261,28 +272,77 @@ std::string fmtN(const double * v, int n)
 }
 } // namespace
 
-// TEMPORARY (step 6, removed in step 9): once per second while Ready with policy.debug_no_apply, read the robot
-// state, build the state terms and log them. Reads only; nothing is written to the controller.
+// TEMPORARY (steps 6A to 6B, removed in step 9). While Ready with policy.debug_no_apply the policy runs in shadow:
+//  - every controller step the latch counter advances (same seed as training);
+//  - on a latch step the observation is built, the network is run, the action is decoded and latched (so the last_*
+//    terms evolve as in a real run) and the z-score monitor looks at the observation the network saw;
+//  - once per second everything is logged.
+// It reads the robot only: nothing is written to the controller.
 void PolicyRunner::debugTick() noexcept
 {
   try
   {
-    if(!source_ || !builder_) { return; }
+    if(!source_ || !builder_ || !backend_ || !decoder_ || !zmon_) { return; }
     const long every = std::max<long>(1, std::lround(1.0 / options_.controller_dt));
-    if(++debugTicks_ % every != 0) { return; }
+    ++debugTicks_;
+    const bool latchDue = decoder_->advance();
+    const bool logDue = (debugTicks_ % every == 0);
+    if(!latchDue && !logDue) { return; }
+
+    // Failures are remembered and reported in the once-per-second line, so a persistent one cannot flood the log.
+    auto failStep = [&](const std::string & msg) {
+      shadowError_ = msg;
+      if(logDue) { mc_rtc::log::warning("[ismpc_policy] debug obs: {}", msg); }
+    };
 
     RobotState s;
     std::string err;
-    if(!source_->read(s, err))
-    {
-      mc_rtc::log::warning("[ismpc_policy] debug obs: {}", err);
-      return;
-    }
+    if(!source_->read(s, err)) { return failStep(err); }
     if(!builder_->build(s, decoder_->current(), obs_, err) || !ObservationBuilder::toFloat(obs_, obsF_, err))
     {
-      mc_rtc::log::warning("[ismpc_policy] debug obs: {}", err);
-      return;
+      return failStep(err);
     }
+
+    if(latchDue)
+    {
+      std::array<float, PolicyContract::kActionDim> act{};
+      const auto t0 = std::chrono::steady_clock::now();
+      const bool ran = backend_->infer(obsF_.data(), act.data(), err);
+      const double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count();
+      if(!ran) { return failStep("shadow inference failed: " + err); }
+      ActionDecoder::Raw raw{};
+      for(size_t i = 0; i < raw.size(); ++i) { raw[i] = static_cast<double>(act[i]); }
+      if(!decoder_->latch(raw)) { return failStep("shadow inference returned a non finite value"); }
+      lastRaw_ = raw;
+      shadowError_.clear();
+      ++latchCount_;
+      inferSumUs_ += us;
+      inferMaxUs_ = std::max(inferMaxUs_, us);
+      zmon_->update(obs_); // obs_ is still the observation the network just saw
+      if(latchCount_ == 1)
+      {
+        if(!zmon_->available())
+        {
+          mc_rtc::log::warning("[ismpc_policy] z-score monitor: the contract has no normalizer, no z-scores");
+        }
+        else
+        {
+          const auto & off = zmon_->offenders();
+          std::string list;
+          constexpr size_t kListed = 30;
+          for(size_t i = 0; i < off.size() && i < kListed; ++i)
+          {
+            char buf[48];
+            std::snprintf(buf, sizeof(buf), "=%.1f", off[i].z);
+            list += (i ? ", " : "") + zmon_->elementName(off[i].index) + buf;
+          }
+          mc_rtc::log::info("[ismpc_policy] z-score first latch: {} of {} elements with |z| > {:.0f}{}{}", off.size(),
+                            contract_.obs_dim, ZScoreMonitor::kWarn, off.empty() ? "" : ": ", list);
+        }
+      }
+    }
+
+    if(!logDue) { return; }
 
     auto worst = [&](const char * term, std::string & name) {
       const auto * t = builder_->find(term);
@@ -292,7 +352,7 @@ void PolicyRunner::debugTick() noexcept
       for(int i = 0; i < t->dim; ++i)
       {
         const double a = std::fabs(obs_[static_cast<size_t>(t->offset + i)]);
-        if(a >= m)
+        if(a > m)
         {
           m = a;
           name = contract_.joint_names[static_cast<size_t>(i)];
@@ -310,7 +370,7 @@ void PolicyRunner::debugTick() noexcept
         fmtVec3(s.com_lin_vel), fmtVec3(s.base_ang_vel), gyro, fmtVec3(s.projected_gravity), posMax, posName, velMax,
         velName, s.diag.joint_vel_source, s.diag.encoder_vel_max_abs, s.diag.alpha_max_abs);
 
-    // Latched / command terms, as they sit in the observation vector.
+    // Latched / command terms, as they sit in the observation vector the network last saw.
     auto slice = [&](const char * term) {
       const auto * t = builder_->find(term);
       return t ? obs_.data() + t->offset : nullptr;
@@ -327,6 +387,40 @@ void PolicyRunner::debugTick() noexcept
           "[ismpc_policy] debug obs | last_sine {} walk {:.0f} ts {:.3f} last_twist {} | wants_stop {:.0f} | "
           "target_twist raw {} -> obs {} | float32 vector of {} values ok",
           fmtN(sine, 4), *walk, *ts, fmtN(twist, 3), *stop, fmtVec3(s.target_twist), fmtN(target, 3), obsF_.size());
+    }
+
+    // Shadow policy: what the network says, and how long it took.
+    if(latchCount_ > 0)
+    {
+      const auto & d = decoder_->current();
+      mc_rtc::log::info(
+          "[ismpc_policy] shadow | latches {} | raw {} | decoded offset {:.3f} freq {:.3f} sin {:.4f} cos {:.4f} walk {} "
+          "ts {:.3f} twist {} | inference avg {:.1f} us max {:.1f} us{}{}",
+          latchCount_, fmtN(lastRaw_.data(), static_cast<int>(lastRaw_.size())), d.offset, d.frequency, d.sin_amp,
+          d.cos_amp, d.walk ? 1 : 0, d.ts, fmtN(d.twist.data(), 3), inferSumUs_ / static_cast<double>(latchCount_),
+          inferMaxUs_, shadowError_.empty() ? "" : " | LAST ERROR: ", shadowError_);
+    }
+    else if(!shadowError_.empty())
+    {
+      mc_rtc::log::warning("[ismpc_policy] shadow: no latch yet, last error: {}", shadowError_);
+    }
+
+    // z-score monitor: max |z| per term over the latches since the last line.
+    if(zmon_->available() && latchCount_ > 0)
+    {
+      std::string line;
+      const auto & run = zmon_->runningMax();
+      for(size_t ti = 0; ti < run.size(); ++ti)
+      {
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), " %.1f", run[ti].z);
+        // name the element only where it helps: an offender inside a multi-element term
+        const bool named = run[ti].z > ZScoreMonitor::kWarn && zmon_->terms()[ti].dim > 1;
+        line += (ti ? " | " : "") + (named ? zmon_->termElementName(ti, run[ti].elem) : zmon_->terms()[ti].name) + buf;
+      }
+      mc_rtc::log::info("[ismpc_policy] z max since last line | {} | elements > {:.0f} at last latch: {}", line,
+                        ZScoreMonitor::kWarn, zmon_->offenders().size());
+      zmon_->resetRunning();
     }
   }
   catch(...)

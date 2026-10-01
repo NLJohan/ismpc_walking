@@ -15,6 +15,7 @@ set(controller_SRC
   policy/ActionDecoderParity.cpp
   policy/ObservationBuilder.cpp
   policy/ControllerAdapter.cpp
+  policy/ZScoreMonitor.cpp
   policy/PolicyRunner.cpp
 )
 
@@ -33,6 +34,7 @@ set(controller_HDR
   ../include/ismpc_walking/policy/RobotState.h
   ../include/ismpc_walking/policy/ObservationBuilder.h
   ../include/ismpc_walking/policy/ControllerAdapter.h
+  ../include/ismpc_walking/policy/ZScoreMonitor.h
   ../include/ismpc_walking/policy/PolicyRunner.h
 )
 
