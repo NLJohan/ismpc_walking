@@ -454,7 +454,7 @@ void PolicyRunner::activate() noexcept
     if(!sink_->canTakeOver(err)) { return refuse(err); }
 
     // Activation is training's episode reset: counter seeded to 1 (first latch on the 10th step), command back to
-    // the reset defaults, so the first thing applied is walk off, Ts 1.1, twist 0.
+    // the reset defaults, so the first thing applied is offset 0.9, frequency 0, amplitudes 0, walk off, Ts 1.1, twist 0.
     decoder_->reset();
     zmon_->resetRunning();
     lastRaw_ = ActionDecoder::Raw{};
@@ -498,7 +498,7 @@ void PolicyRunner::release(const std::string & reason, bool failure) noexcept
   }
 }
 
-// The Active loop (step 7A: ownership and the walk gate only; sine, Ts and twist come in 7B). Per controller step:
+// The Active loop (step 7B: the whole command, i.e. sine parameters, walk gate, Ts and twist). Per controller step:
 //  1. apply the command that was latched on a PREVIOUS step (training hands a latched action to the controller one
 //     control period late, see B.10 item 5);
 //  2. advance the latch counter; on a latch step read the robot, build the observation, run the network, latch.
@@ -515,7 +515,7 @@ void PolicyRunner::activeTick() noexcept
     const long every = std::max<long>(1, std::lround(1.0 / options_.controller_dt));
     ++activeTicks_;
 
-    sink_->applyWalkGate(decoder_->current().walk);
+    sink_->applyCommand(decoder_->current());
 
     if(decoder_->advance())
     {
@@ -559,9 +559,10 @@ void PolicyRunner::activeTick() noexcept
       const auto & d = decoder_->current();
       const size_t nOff = zmon_->available() ? zmon_->offenders().size() : size_t(0);
       mc_rtc::log::info(
-          "[ismpc_policy] active | latches {} | latched walk {} (decoded, sine/Ts/twist not applied yet: step 7B) offset "
-          "{:.3f} ts {:.3f} twist {} | elements |z| > {:.0f}: {} | inference avg {:.1f} us max {:.1f} us",
-          latchCount_, d.walk ? 1 : 0, d.offset, d.ts, fmtN(d.twist.data(), 3), ZScoreMonitor::kWarn, nOff,
+          "[ismpc_policy] active | latches {} | applied: walk {} offset {:.3f} freq {:.3f} sin {:.4f} cos {:.4f} "
+          "ts {:.3f} twist {} | elements |z| > {:.0f}: {} | inference avg {:.1f} us max {:.1f} us",
+          latchCount_, d.walk ? 1 : 0, d.offset, d.frequency, d.sin_amp, d.cos_amp, d.ts, fmtN(d.twist.data(), 3),
+          ZScoreMonitor::kWarn, nOff,
           latchCount_ > 0 ? inferSumUs_ / static_cast<double>(latchCount_) : 0.0, inferMaxUs_);
     }
   }

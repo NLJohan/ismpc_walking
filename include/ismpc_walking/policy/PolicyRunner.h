@@ -24,7 +24,7 @@ enum class PolicyState
 {
   NoPolicy, // nothing loaded (see lastError() if a load was attempted)
   Ready,    // loaded and validated, not driving
-  Active,   // driving the controller (step 7A: ownership and the walk gate only)
+  Active,   // driving the controller (step 7B: sine parameters, walk gate, Ts and twist)
   Releasing // ramping back to manual        (not reachable yet)
 };
 

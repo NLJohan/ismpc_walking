@@ -15,7 +15,8 @@ namespace ismpc_walking::policy
 /**
  * The only policy code that touches Walking_controller (one `friend` declaration).
  * Read side (StateSource): never writes to the controller.
- * Write side (ControlSink, step 7): ownership of the velocity source and of Ts, and the walk gate.
+ * Write side (ControlSink, step 7): ownership of the velocity source and of Ts, the walk gate (7A) and the
+ * whole command: sine parameters, Ts and twist (7B).
  */
 class ControllerAdapter final : public StateSource, public ControlSink
 {
@@ -30,6 +31,7 @@ public:
   void takeOwnership() noexcept override;
   void releaseOwnership() noexcept override;
   void applyWalkGate(bool walk) noexcept override;
+  void applyCommand(const DecodedAction & cmd) noexcept override;
 
 private:
   Walking_controller & ctl_;

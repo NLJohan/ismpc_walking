@@ -25,6 +25,9 @@ constexpr size_t kNoMbIndex = static_cast<size_t>(-1);
 constexpr size_t kComLinVelLagTicks = 2;
 constexpr size_t kWantsStopLagTicks = 1;
 
+// ISMPC_Solver's own default for m_rl_com_z_offset (the value manual mode has always run with).
+constexpr double kManualOffset = 0.95;
+
 Vec3 toVec3(const Eigen::Vector3d & v) { return {v.x(), v.y(), v.z()}; }
 } // namespace
 
@@ -192,6 +195,13 @@ bool ControllerAdapter::canTakeOver(std::string & err) noexcept
       err = "the MPC thread is not ready yet";
       return false;
     }
+    // 7B: the policy writes the RlSine parameters; with another CoM-height signal selected they would be ignored.
+    if(ctl_.ismpc_solver().TestSignal() != CoMHeightTestSignal::RlSine)
+    {
+      err = "the CoM height signal is not RlSine (" + ToString(ctl_.ismpc_solver().TestSignal())
+            + "); select RL in the Walking GUI first";
+      return false;
+    }
     if(!ctl_.active)
     {
       err = "the controller is not active (tick Active in the Walking GUI, or set walking_controller.auto_start.activate)";
@@ -220,11 +230,35 @@ void ControllerAdapter::takeOwnership() noexcept
 void ControllerAdapter::releaseOwnership() noexcept
 {
   if(!owning_) { return; }
+  // Back to the manual defaults, so nothing the policy last wrote is left frozen in the controller (CoM height sine,
+  // Ts, RL twist). Immediate, no ramp (ramps are step 8). Stop is deliberately left as the policy set it.
+  auto & solver = ctl_.ismpc_solver();
+  solver.SetOffset(kManualOffset);
+  solver.SetFrequency(0.);
+  solver.SetSinAmp(0.);
+  solver.SetCosAmp(0.);
+  ctl_.ts(Walking_controller::kDefaultTSteps);
+  ctl_.rl_reference_velocity.setZero();
   ctl_.rlVelocityControl = savedRlVelocityControl_;
   ctl_.policyControlsTs = savedPolicyControlsTs_;
   owning_ = false;
 }
 
 void ControllerAdapter::applyWalkGate(bool walk) noexcept { ctl_.SetPolicyWantsWalk(walk); }
+
+// Same seven writes, same order as IsmpcSineAction._advance_sine_period + the datastore inputs of training. Controller
+// thread only, no lock: the sine setters and Ts are plain doubles that the MPC thread reads outside mutex_mpc_ (as in
+// training), and rl_reference_velocity is read by the mux on this same thread.
+void ControllerAdapter::applyCommand(const DecodedAction & c) noexcept
+{
+  auto & solver = ctl_.ismpc_solver();
+  solver.SetOffset(c.offset);
+  solver.SetFrequency(c.frequency);
+  solver.SetSinAmp(c.sin_amp);
+  solver.SetCosAmp(c.cos_amp);
+  ctl_.SetPolicyWantsWalk(c.walk);
+  ctl_.SetPolicyStepTiming(c.ts); // goes through the controller's own ts_range clamp
+  ctl_.rl_reference_velocity = Eigen::Vector3d(c.twist[0], c.twist[1], c.twist[2]);
+}
 
 } // namespace ismpc_walking::policy
