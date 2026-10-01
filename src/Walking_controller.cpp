@@ -44,7 +44,7 @@ Walking_controller::Walking_controller(mc_rbdyn::RobotModulePtr rm,
                                        mc_control::ControllerParameters params)
 : mc_control::fsm::Controller(rm, dt, config, params), filter_left_hand_wrench_(0.005, 0),
   filter_right_hand_wrench_(0.005, 0), filter_gamma_(0.005, 0), zmp_vel_(0.005, 0.05, {0., 0., 0.}),
-  leftHandDisturbanceFilter_(dt, 0), rightHandDisturbanceFilter_(dt, 0), filter_comAccZ(dt, 0)
+  leftHandDisturbanceFilter_(dt, 0), rightHandDisturbanceFilter_(dt, 0), filter_comAccZ(dt, 0), obs_filter_(dt, 0)
 {
 
   mc_rbdyn::lipm_stabilizer::StabilizerConfiguration stabiConfig(robot().module().defaultLIPMStabilizerConfiguration());
@@ -191,6 +191,7 @@ Walking_controller::Walking_controller(mc_rbdyn::RobotModulePtr rm,
   filter_right_hand_wrench_ =
       mc_filter::LowPass<sva::ForceVecd>(solver().dt(), controller_config_.wrench_filter_cutoff);
   filter_gamma_ = mc_filter::LowPass<Eigen::Vector3d>(solver().dt(), controller_config_.gamma_filter_cutoff);
+  obs_filter_ = mc_filter::LowPass<Eigen::Vector3d>(solver().dt(), obs_filter_cutoff_T_);
 
   zmp_vel_ = mc_filter::ExponentialMovingAverage<Eigen::Vector3d>(solver().dt(), controller_config_.delta,
                                                                   Eigen::Vector3d::Zero());
@@ -1068,6 +1069,11 @@ void Walking_controller::UpdateInitialVectors()
     mpc_state_.v_c_k = robot().comVelocity();
     mpc_state_.p_u = mpc_state_.p_c_k + mpc_state_.v_c_k / mpc_state_.getEta(static_cast<size_t>(mpc_state_.Index));
   }
+  // Raw norms for the RL observation filters (updated at the end of this function); 0 when not available.
+  double obsPerturbationNorm = 0;
+  double obsZmpErrorNorm = 0;
+  double obsDcmBiasNorm = 0;
+
   if(UseRealRobot)
   {
 
@@ -1083,12 +1089,19 @@ void Walking_controller::UpdateInitialVectors()
       zmp_frame = sva::interpolate(robot().surfacePose(supportFootName), robot().surfacePose(swingFootName), 0.5);
     }
     Eigen::Vector3d zmp_vel = mpc_state_.p_z_k;
+    // p_z_k is the MPC's planned ZMP here when a trajectory exists (set above); the measurement overwrites it.
+    const Eigen::Vector3d zmp_planned = mpc_state_.p_z_k;
     robot().zmp(mpc_state_.p_z_k, measured_net_wrench, zmp_frame);
+    if(UseMPCState && mpc_state_.X_MPC.size() != 0)
+    {
+      obsZmpErrorNorm = (mpc_state_.p_z_k - zmp_planned).head<2>().norm();
+    }
     zmp_vel = (mpc_state_.p_z_k - zmp_vel) / controller_timestep;
     zmp_vel_.append(zmp_vel);
 
     mpc_state_.v_c_k = realRobot().comVelocity();
     mpc_state_.ComBias.segment(0, 2) = stabTask->biasDCM();
+    obsDcmBiasNorm = mpc_state_.ComBias.segment(0, 2).norm();
     // Time-Varying Fix: realRobot().com() carries the robot's actual measured z, which is
     // physically meaningful and must NOT be overwritten with the constant comHeight below.
     mpc_state_.p_c_k = realRobot().com() + mpc_state_.ComBias;
@@ -1119,6 +1132,7 @@ void Walking_controller::UpdateInitialVectors()
   if(!debugMode && UseRealRobot)
   {
     ComputePerturbances(w_, kappa_, w_inf_, kappa_inf_);
+    obsPerturbationNorm = w_.segment(0, 2).norm();
     stabTask->setExternalWrenches(
         {leftHandName_, rightHandName_},
         {robot().frame(leftHandName_).forceSensor().wrench(), robot().frame(rightHandName_).forceSensor().wrench()},
@@ -1143,6 +1157,19 @@ void Walking_controller::UpdateInitialVectors()
   if(mpc_state_.X_MPC.size() != 0)
   {
     mpc_state_.Uk = stabTask->distribZMP();
+  }
+
+  // RL observation filters. A non finite raw value (e.g. ComputePerturbances divides by the filtered net force,
+  // which is 0 at start-up) never enters the filter: that component keeps its last filtered value.
+  {
+    Eigen::Vector3d in(obsPerturbationNorm, obsZmpErrorNorm, obsDcmBiasNorm);
+    const Eigen::Vector3d held = obs_filter_.eval();
+    for(Eigen::Index i = 0; i < 3; ++i)
+    {
+      if(!std::isfinite(in[i])) { in[i] = held[i]; }
+    }
+    obs_raw_ = in;
+    obs_filter_.update(in);
   }
 }
 
@@ -1288,6 +1315,9 @@ void Walking_controller::reset(const mc_control::ControllerResetData & reset_dat
   filter_right_hand_wrench_ =
       mc_filter::LowPass<sva::ForceVecd>(solver().dt(), controller_config_.wrench_filter_cutoff);
   filter_gamma_ = mc_filter::LowPass<Eigen::Vector3d>(solver().dt(), controller_config_.gamma_filter_cutoff);
+  // RL observation filters restart from a fresh filter at every (episode) reset.
+  obs_filter_ = mc_filter::LowPass<Eigen::Vector3d>(solver().dt(), obs_filter_cutoff_T_);
+  obs_raw_.setZero();
 
   swing_foot_initial_pose = robot().surfacePose(swingFootName).translation();
   X_0_SwingFootInitial = swing_foot_initial_pose;

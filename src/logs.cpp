@@ -81,6 +81,9 @@ void Walking_controller::AddToLog()
                        [this]() -> Eigen::Vector2d { return w_inf_.segment(0, 2); });
   logger().addLogEntry("ISMPC_perturbation_infinity_kappa", [this]() -> double { return kappa_inf_; });
   logger().addLogEntry("ISMPC_perturbation_Ldot/mHw2", [this]() -> const Eigen::Vector3d & { return Ldot_offset; });
+  // RL observation signals: (perturbation norm, zmp error norm, dcm bias norm), raw and filtered.
+  logger().addLogEntry("ISMPC_obs_raw", [this]() -> const Eigen::Vector3d & { return obs_raw_; });
+  logger().addLogEntry("ISMPC_obs_filtered", [this]() -> Eigen::Vector3d { return obs_filter_.eval(); });
 
   // logger().addLogEntry("ISMPC_State_ZMP_kinmes", [this]() -> const Eigen::Vector3d {
 

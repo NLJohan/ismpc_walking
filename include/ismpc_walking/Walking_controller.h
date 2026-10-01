@@ -151,6 +151,10 @@ public:
     controller_config_.safety_roll_error_ = config("walking_controller")("safety_foot_roll_error");
     controller_config_.wrench_filter_cutoff = config("walking_controller")("wrench_filter_cutoff_T");
     controller_config_.gamma_filter_cutoff = config("walking_controller")("gamma_filter_cutoff_T");
+    if(config("walking_controller").has("obs_filter_cutoff_T"))
+    {
+      obs_filter_cutoff_T_ = config("walking_controller")("obs_filter_cutoff_T");
+    }
     controller_config_.footStepHeight = config("walking_controller")("footstep_height");
 
     controller_config_.SwingFootStiffness = config("tasks")("swingfoot_stiffness");
@@ -452,6 +456,15 @@ protected:
     return robot.posW().rotation() * robot.comVelocity();
   }
 
+  /**
+   * Low-passed ISMPC signals for the RL observation, (perturbation, zmp error, dcm bias), each a norm over x,y in
+   * metres: |w_.xy|, |measured ZMP - MPC planned ZMP|.xy, |biasDCM|. The norm is filtered (not its parts).
+   * Updated once per run() at the end of UpdateInitialVectors(); reset in reset(). Controller thread only.
+   */
+  const Eigen::Vector3d & obsFilteredSignals() const noexcept { return obs_filter_.eval(); }
+  /** Cutoff period of the three filters above, seconds (YAML walking_controller.obs_filter_cutoff_T). */
+  double obsFilterCutoffT() const noexcept { return obs_filter_cutoff_T_; }
+
   void create_datastore()
   {
 
@@ -564,6 +577,15 @@ protected:
                           [this]() -> double { return ismpcWantsStop() ? 1.0 : 0.0; });
     datastore().make_call("ismpc_walking::robot_walking_d",
                           [this]() -> double { return Robot_Walking ? 1.0 : 0.0; });
+    // Filtered observation signals (see obsFilteredSignals()): one double each, as left by the last run().
+    datastore().make_call("ismpc_walking::get_filt_perturbation",
+                          [this]() -> double { return obs_filter_.eval().x(); });
+    datastore().make_call("ismpc_walking::get_filt_zmp_error",
+                          [this]() -> double { return obs_filter_.eval().y(); });
+    datastore().make_call("ismpc_walking::get_filt_dcm_bias",
+                          [this]() -> double { return obs_filter_.eval().z(); });
+    // Cutoff period (s) the filters run with; the exporter records it in the contract.
+    datastore().make_call("ismpc_walking::get_obs_filter_cutoff_T", [this]() -> double { return obs_filter_cutoff_T_; });
     // === end RL interface ===
   }
 
@@ -944,6 +966,12 @@ private:
 
   double comAccZ = 0;
   mc_filter::LowPass<Eigen::Vector3d> filter_comAccZ;
+
+  // RL observation filters: one first-order low-pass on the 3-vector (perturbation norm, zmp error norm, dcm bias
+  // norm). Elementwise, so equal to three independent scalar filters with the same cutoff period.
+  double obs_filter_cutoff_T_ = 10.0; // s, YAML walking_controller.obs_filter_cutoff_T
+  mc_filter::LowPass<Eigen::Vector3d> obs_filter_;
+  Eigen::Vector3d obs_raw_ = Eigen::Vector3d::Zero(); // unfiltered norms of the last update (logging)
 
   double currentLeftLeg = 0;
   double currentRightLeg = 0;
