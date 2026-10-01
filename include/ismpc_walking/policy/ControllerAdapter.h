@@ -30,6 +30,9 @@ public:
   bool canTakeOver(std::string & err) noexcept override;
   void takeOwnership() noexcept override;
   void releaseOwnership() noexcept override;
+  void startObsFilters(double cutoffT) noexcept override;
+  double obsFilterCutoffT() noexcept override;
+  void setObsFilterCutoffT(double cutoffT) noexcept override;
   void applyWalkGate(bool walk) noexcept override;
   void applyCommand(const DecodedAction & cmd) noexcept override;
 
@@ -43,6 +46,7 @@ private:
   {
     Vec3 com_lin_vel{};
     double wants_stop = 0;
+    Vec3 filt{}; // obsFilteredSignals(): perturbation, ZMP error, DCM bias
   };
   std::array<Sample, 3> hist_{}; // hist_[0] = this step, hist_[1] = one step ago, hist_[2] = two steps ago
   size_t filled_ = 0;            // valid entries in hist_
@@ -51,6 +55,8 @@ private:
   bool owning_ = false;
   bool savedRlVelocityControl_ = false;
   bool savedPolicyControlsTs_ = true;
+  bool filtersOwned_ = false;     // startObsFilters() was called and releaseOwnership() has not restored yet
+  double savedObsCutoffT_ = 0;    // the controller's cutoff before startObsFilters()
 };
 
 } // namespace ismpc_walking::policy

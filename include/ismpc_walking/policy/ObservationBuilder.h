@@ -16,7 +16,8 @@ namespace ismpc_walking::policy
  * Built in doubles; the cast to float32 happens once, at the end (step 6B).
  *
  * Two groups of terms:
- *  - robot-state terms (com_lin_vel, base_ang_vel, projected_gravity, joint_pos, joint_vel): fillState();
+ *  - robot-state terms (com_lin_vel, base_ang_vel, projected_gravity, joint_pos, joint_vel and the three controller-side
+ *    filtered signals filt_perturbation, filt_zmp_error, filt_dcm_bias): fillState();
  *  - latched / command terms (last_*, ismpc_wants_stop, target_twist): fillLatched().
  * build() does both. toFloat() is the single float32 cast at the end.
  */
@@ -35,7 +36,10 @@ public:
     LastStepTimingAction,
     LastTwistAction,
     IsmpcWantsStop,
-    TargetTwist
+    TargetTwist,
+    FiltPerturbation,
+    FiltZmpError,
+    FiltDcmBias
   };
 
   struct Term

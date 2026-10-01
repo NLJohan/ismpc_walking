@@ -31,6 +31,9 @@ constexpr Known kKnown[] = {
     {"last_twist_action", Id::LastTwistAction},
     {"ismpc_wants_stop", Id::IsmpcWantsStop},
     {"target_twist", Id::TargetTwist},
+    {"filt_perturbation", Id::FiltPerturbation},
+    {"filt_zmp_error", Id::FiltZmpError},
+    {"filt_dcm_bias", Id::FiltDcmBias},
 };
 
 bool lookup(const std::string & name, Id & id)
@@ -73,7 +76,10 @@ bool ObservationBuilder::isStateTerm(TermId id) noexcept
     case Id::BaseAngVel:
     case Id::ProjectedGravity:
     case Id::JointPos:
-    case Id::JointVel: return true;
+    case Id::JointVel:
+    case Id::FiltPerturbation:
+    case Id::FiltZmpError:
+    case Id::FiltDcmBias: return true;
     default: return false;
   }
 }
@@ -168,6 +174,9 @@ bool ObservationBuilder::fillState(const RobotState & s, std::vector<double> & o
         // mjlab: joint_vel - default_joint_vel, and the default velocity is zero.
         for(size_t i = 0; i < n; ++i) { out[i] = s.joint_vel[i]; }
         break;
+      case Id::FiltPerturbation: out[0] = s.filt_signals[0]; break;
+      case Id::FiltZmpError: out[0] = s.filt_signals[1]; break;
+      case Id::FiltDcmBias: out[0] = s.filt_signals[2]; break;
       default: continue; // latched terms: fillLatched()
     }
     if(!allFinite(out, static_cast<size_t>(t.dim))) { return bad(err, "term '" + t.name + "' is not finite"); }

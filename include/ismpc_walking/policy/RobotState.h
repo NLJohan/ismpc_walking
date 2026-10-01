@@ -23,6 +23,7 @@ struct RobotState
   std::vector<double> joint_vel; // rad/s
   double ismpc_wants_stop = 0;   // 1 = ISMPC would have stopped on its own (advisory), else 0
   Vec3 target_twist{};           // user reference velocity (vx, vy, omega), NOT clamped: the builder clamps it
+  Vec3 filt_signals{};           // low-passed (perturbation, ZMP error, DCM bias) norms, m, already lagged by the source
 
   /** TEMPORARY (step 6 diagnostics, removed in step 9): not used by the builder. */
   struct Diagnostics

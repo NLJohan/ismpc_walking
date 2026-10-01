@@ -33,6 +33,19 @@ public:
    */
   virtual void releaseOwnership() noexcept = 0;
 
+  /**
+   * Step C2c: the three observation filters of the controller (perturbation, ZMP error, DCM bias) start as in training's
+   * episode reset: remembers the controller's cutoff period, sets `cutoffT` (warning if it differs) and restarts the
+   * filters from zero. Call right after takeOwnership(). releaseOwnership() puts the remembered cutoff back.
+   */
+  virtual void startObsFilters(double cutoffT) noexcept = 0;
+
+  /** Current cutoff period (s) of the controller's observation filters (GUI). */
+  virtual double obsFilterCutoffT() noexcept = 0;
+
+  /** Sets the cutoff period (s) of the controller's observation filters without restarting them (GUI). */
+  virtual void setObsFilterCutoffT(double cutoffT) noexcept = 0;
+
   /** The walk gate: Walking_controller::SetPolicyWantsWalk(walk) (true = may walk, false = Stop). */
   virtual void applyWalkGate(bool walk) noexcept = 0;
 

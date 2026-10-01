@@ -85,6 +85,12 @@ struct PolicyContract
 
   CommandRanges command;
 
+  /**
+   * filters.obs_filter_cutoff_T: cutoff period (s) of the controller-side low-pass filters behind the filt_* observation
+   * terms, as in training. Required. The controller is forced to this value when the policy is activated.
+   */
+  double obs_filter_cutoff_T = 0;
+
   /** JSON text -> struct. Checks presence and types of every field, not their consistency. */
   static bool parse(const std::string & json, PolicyContract & out, std::string & err);
 

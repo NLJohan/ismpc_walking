@@ -24,6 +24,12 @@ constexpr size_t kNoMbIndex = static_cast<size_t>(-1);
 // [I] Inferred from reading mc_rtc_action_base.py / ismpc_sine_action.py, not measured. Set both to 0 to disable.
 constexpr size_t kComLinVelLagTicks = 2;
 constexpr size_t kWantsStopLagTicks = 1;
+// The three filtered signals are read through the datastore too (get_filt_*), but they are written by run() itself, at
+// the end of UpdateInitialVectors(): the getter after step j's run returns the state after step j's update. For a latch
+// at step k training sees the getter after the run dispatched at step k-2; sample() at the start of step k-1 already sees
+// the state left by run k-2, so the lag is 1 (unlike com_lin_vel, which the observers write BEFORE run(): lag 2).
+// [I] Inferred, not measured. Set to 0 to disable.
+constexpr size_t kFiltLagTicks = 1;
 
 // ISMPC_Solver's own default for m_rl_com_z_offset (the value manual mode has always run with).
 constexpr double kManualOffset = 0.95;
@@ -98,6 +104,7 @@ void ControllerAdapter::sample() noexcept
     hist_[1] = hist_[0];
     hist_[0].com_lin_vel = toVec3(ctl_.estimatedComLinVel());
     hist_[0].wants_stop = ctl_.ismpcWantsStop() ? 1.0 : 0.0;
+    hist_[0].filt = toVec3(ctl_.obsFilteredSignals());
     filled_ = std::min<size_t>(filled_ + 1, hist_.size());
   }
   catch(...)
@@ -125,11 +132,13 @@ bool ControllerAdapter::read(RobotState & out, std::string & err) noexcept
     {
       out.com_lin_vel = hist_[std::min(kComLinVelLagTicks, filled_ - 1)].com_lin_vel;
       out.ismpc_wants_stop = hist_[std::min(kWantsStopLagTicks, filled_ - 1)].wants_stop;
+      out.filt_signals = hist_[std::min(kFiltLagTicks, filled_ - 1)].filt;
     }
     else
     {
       out.com_lin_vel = toVec3(ctl_.estimatedComLinVel());
       out.ismpc_wants_stop = ctl_.ismpcWantsStop() ? 1.0 : 0.0;
+      out.filt_signals = toVec3(ctl_.obsFilteredSignals());
     }
     out.target_twist = toVec3(ctl_.user_reference_velocity); // human/joystick intent; the builder clamps it
     out.base_ang_vel = toVec3(E * robot.velW().angular());               // world -> body
@@ -241,7 +250,50 @@ void ControllerAdapter::releaseOwnership() noexcept
   ctl_.rl_reference_velocity.setZero();
   ctl_.rlVelocityControl = savedRlVelocityControl_;
   ctl_.policyControlsTs = savedPolicyControlsTs_;
+  if(filtersOwned_)
+  {
+    // Back to the cutoff the controller had; the filter state is kept (only its coefficient changes).
+    ctl_.obs_filter_cutoff_T_ = savedObsCutoffT_;
+    ctl_.obs_filter_.cutoffPeriod(savedObsCutoffT_);
+    filtersOwned_ = false;
+  }
   owning_ = false;
+}
+
+// Same as what Walking_controller::reset() does to these filters: a fresh LowPass with the controller's step and the
+// cutoff period, raw value zero. Controller thread (the filter is updated in run() on the same thread).
+void ControllerAdapter::startObsFilters(double cutoffT) noexcept
+{
+  try
+  {
+    if(!filtersOwned_)
+    {
+      savedObsCutoffT_ = ctl_.obs_filter_cutoff_T_;
+      filtersOwned_ = true;
+    }
+    if(std::fabs(ctl_.obs_filter_cutoff_T_ - cutoffT) > 1e-9)
+    {
+      mc_rtc::log::warning(
+          "[ismpc_policy] the observation filters ran with cutoff T = {} s but the policy was trained with {} s: "
+          "overriding for as long as the policy is active",
+          ctl_.obs_filter_cutoff_T_, cutoffT);
+    }
+    ctl_.obs_filter_cutoff_T_ = cutoffT;
+    ctl_.obs_filter_ = mc_filter::LowPass<Eigen::Vector3d>(ctl_.solver().dt(), cutoffT);
+    ctl_.obs_raw_.setZero();
+    mc_rtc::log::info("[ismpc_policy] observation filters restarted, cutoff T = {} s", cutoffT);
+  }
+  catch(...)
+  {
+  }
+}
+
+double ControllerAdapter::obsFilterCutoffT() noexcept { return ctl_.obs_filter_cutoff_T_; }
+
+void ControllerAdapter::setObsFilterCutoffT(double cutoffT) noexcept
+{
+  ctl_.obs_filter_cutoff_T_ = cutoffT;
+  ctl_.obs_filter_.cutoffPeriod(cutoffT);
 }
 
 void ControllerAdapter::applyWalkGate(bool walk) noexcept { ctl_.SetPolicyWantsWalk(walk); }

@@ -471,6 +471,7 @@ void PolicyRunner::activate() noexcept
     activeTicks_ = 0;
     lastError_.clear();
     sink_->takeOwnership();
+    sink_->startObsFilters(contract_.obs_filter_cutoff_T); // as training's episode reset, with the trained cutoff
     state_ = PolicyState::Active;
     mc_rtc::log::info("[ismpc_policy] state=Active: the policy owns walking, Ts and the velocity source");
   }
@@ -777,6 +778,28 @@ void PolicyRunner::buildGui()
         if(benchRuns_ == 0) { return std::string("-"); }
         char buf[96];
         std::snprintf(buf, sizeof(buf), "%.0f / %.0f (%d runs)", benchAvgUs_, benchMaxUs_, benchRuns_);
+        return std::string(buf);
+      }),
+      mc_rtc::gui::NumberInput(
+          "Obs filter cutoff T (s)", [this]() { return sink_ ? sink_->obsFilterCutoffT() : 0.; },
+          [this, busy](double T) {
+            if(!sink_) { return; }
+            if(busy())
+            {
+              mc_rtc::log::warning("[ismpc_policy] the obs filter cutoff is set by the policy while {}", toString(state_));
+              return;
+            }
+            if(!std::isfinite(T) || !(T > 0))
+            {
+              mc_rtc::log::warning("[ismpc_policy] obs filter cutoff T must be > 0 (got {})", T);
+              return;
+            }
+            sink_->setObsFilterCutoffT(T);
+          }),
+      mc_rtc::gui::Label("Obs filter cutoff T in the policy (s)", [this]() {
+        if(!contract()) { return std::string("-"); }
+        char buf[48];
+        std::snprintf(buf, sizeof(buf), "%g", contract_.obs_filter_cutoff_T);
         return std::string(buf);
       }));
 }

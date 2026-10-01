@@ -105,6 +105,9 @@ int expectedObsTermDim(const std::string & name, int n_joints)
   if(name == "last_step_timing_action") { return 1; }
   if(name == "last_twist_action") { return 3; }
   if(name == "ismpc_wants_stop") { return 1; }
+  if(name == "filt_perturbation") { return 1; }
+  if(name == "filt_zmp_error") { return 1; }
+  if(name == "filt_dcm_bias") { return 1; }
   if(name == "target_twist") { return 3; }
   return -1;
 }
@@ -220,6 +223,10 @@ bool PolicyContract::parse(const std::string & json, PolicyContract & out, std::
     c.command.lin_vel_x = numArray<2>(child(rng, "lin_vel_x", "command.ranges"), "command.ranges.lin_vel_x");
     c.command.lin_vel_y = numArray<2>(child(rng, "lin_vel_y", "command.ranges"), "command.ranges.lin_vel_y");
     c.command.ang_vel_z = numArray<2>(child(rng, "ang_vel_z", "command.ranges"), "command.ranges.ang_vel_z");
+
+    // --- filters (required: the filt_* observation terms are defined by this cutoff)
+    const auto flt = child(root, "filters", "contract");
+    c.obs_filter_cutoff_T = numKey(flt, "obs_filter_cutoff_T", "filters");
 
     out = std::move(c);
     return true;
@@ -344,6 +351,10 @@ bool PolicyContract::validate(std::string & err) const
   for(const auto & r : {command.lin_vel_x, command.lin_vel_y, command.ang_vel_z})
   {
     if(!(r[0] <= r[1])) { return fmtErr(err, "command range with min > max"); }
+  }
+  if(!finite(obs_filter_cutoff_T) || !(obs_filter_cutoff_T > 0))
+  {
+    return fmtErr(err, "filters.obs_filter_cutoff_T must be > 0");
   }
   return true;
 }
