@@ -69,13 +69,4 @@ private:
   DecodedAction current_;
 };
 
-/**
- * TEMPORARY dev scaffolding (step 5 parity test, removed in step 9).
- * Reads `in_path` (CSV, one raw action of 9 values per line, one per latch), replays the decoder with the
- * latch counter and writes `out_path` (CSV: latch,tick,offset,frequency,sin_amp,cos_amp,walk,ts,vx,vy,omega).
- * Compared against the real Python action term by tools/decoder_parity.py.
- */
-bool runDecoderParity(const PolicyContract & contract, const std::string & in_path, const std::string & out_path,
-                      std::string & err);
-
 } // namespace ismpc_walking::policy

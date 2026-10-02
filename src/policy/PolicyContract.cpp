@@ -127,10 +127,6 @@ bool PolicyContract::parse(const std::string & json, PolicyContract & out, std::
       const auto ck = root("checkpoint");
       if(ck.has("stem") && ck("stem").isString()) { c.checkpoint_stem = str(ck("stem"), "checkpoint.stem"); }
       if(ck.has("iteration") && ck("iteration").isNumeric()) { c.iteration = integer(ck("iteration"), "checkpoint.iteration"); }
-      if(ck.has("git") && ck("git").isObject() && ck("git").has("hash") && ck("git")("hash").isString())
-      {
-        c.git_hash = str(ck("git")("hash"), "checkpoint.git.hash");
-      }
     }
 
     c.controller_dt = numKey(root, "controller_dt", "contract");
@@ -187,7 +183,6 @@ bool PolicyContract::parse(const std::string & json, PolicyContract & out, std::
     a.ts_bias = numKey(k, "ts_bias", kp);
     a.ts_min = numKey(k, "ts_min", kp);
     a.ts_max = numKey(k, "ts_max", kp);
-    a.ts_default = numKey(k, "ts_default", kp);
     a.twist_scale = numArray<3>(child(k, "twist_scale", kp), kp + ".twist_scale");
     a.twist_raw_clamp = numArray<2>(child(k, "twist_raw_clamp", kp), kp + ".twist_raw_clamp");
     // null (or absent) = no rate limit; an array = per-latch limits.
@@ -337,8 +332,7 @@ bool PolicyContract::validate(std::string & err) const
     }
   }
   if(!finite(a.offset_scale) || !finite(a.offset_bias) || !finite(a.frequency_scale) || !finite(a.frequency_bias)
-     || !finite(a.amplitude_scale) || !finite(a.walk_gate_bias) || !finite(a.ts_scale) || !finite(a.ts_bias)
-     || !finite(a.ts_default))
+     || !finite(a.amplitude_scale) || !finite(a.walk_gate_bias) || !finite(a.ts_scale) || !finite(a.ts_bias))
   {
     return fmtErr(err, "a scale/bias constant is not finite");
   }

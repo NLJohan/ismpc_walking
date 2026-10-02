@@ -24,16 +24,6 @@ struct RobotState
   double ismpc_wants_stop = 0;   // 1 = ISMPC would have stopped on its own (advisory), else 0
   Vec3 target_twist{};           // user reference velocity (vx, vy, omega), NOT clamped: the builder clamps it
   Vec3 filt_signals{};           // low-passed (perturbation, ZMP error, DCM bias) norms, m, already lagged by the source
-
-  /** TEMPORARY (step 6 diagnostics, removed in step 9): not used by the builder. */
-  struct Diagnostics
-  {
-    bool has_gyro = false;
-    Vec3 gyro{};                      // body sensor angular velocity, if the robot has one
-    std::string joint_vel_source;     // where joint_vel came from
-    double encoder_vel_max_abs = -1;  // max |encoderVelocities()|, -1 if not available
-    double alpha_max_abs = 0;         // max |mbc.alpha| over the contract joints
-  } diag;
 };
 
 /** Where a RobotState comes from. The only implementation is ControllerAdapter. */

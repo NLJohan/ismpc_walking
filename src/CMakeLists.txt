@@ -12,7 +12,6 @@ set(controller_SRC
   policy/OnnxBackend.cpp
   policy/PolicyLibrary.cpp
   policy/ActionDecoder.cpp
-  policy/ActionDecoderParity.cpp
   policy/ObservationBuilder.cpp
   policy/ControllerAdapter.cpp
   policy/ZScoreMonitor.cpp

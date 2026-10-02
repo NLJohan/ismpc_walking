@@ -29,8 +29,7 @@ enum class PolicyState
 {
   NoPolicy, // nothing loaded (see lastError() if a load was attempted)
   Ready,    // loaded and validated, not driving
-  Active,   // driving the controller (step 7B: sine parameters, walk gate, Ts and twist)
-  Releasing // ramping back to manual        (not reachable yet)
+  Active    // driving the controller (sine parameters, walk gate, Ts and twist)
 };
 
 const char * toString(PolicyState s) noexcept;
@@ -50,7 +49,6 @@ public:
     std::vector<std::string> joint_names; // robot joints, refJointOrder
     std::string dir;  // policies directory (may be empty)
     std::string file; // model to load at start-up (absolute, or relative to dir); empty = none
-    bool debug_no_apply = false; // TEMPORARY (removed in step 9): log the observation while Ready, never move the robot
   };
 
   /**
@@ -67,16 +65,16 @@ public:
   /**
    * Loads and validates a model (absolute path, or relative to Options::dir).
    * On success the state is Ready; on any failure it is NoPolicy and lastError() says why.
-   * Refused while Active/Releasing. Synchronous, takes milliseconds.
+   * Refused while Active. Synchronous, takes milliseconds.
    */
   bool load(const std::string & file);
 
-  /** Drops the loaded model (back to NoPolicy, lastError cleared). Refused while Active/Releasing. */
+  /** Drops the loaded model (back to NoPolicy, lastError cleared). Refused while Active. */
   bool unload();
 
   /**
-   * Called once per controller step from run(), on the controller thread. Serves GUI rebuilds and activation
-   * requests, then runs the shadow loop (Ready + debug_no_apply) or the Active loop.
+   * Called once per controller step from run(), on the controller thread. Serves GUI and log rebuilds and
+   * activation / release requests, then runs the Active loop.
    */
   void tick() noexcept;
 
@@ -113,7 +111,7 @@ public:
   const PolicyContract * contract() const noexcept { return state_ == PolicyState::NoPolicy ? nullptr : &contract_; }
 
   /** True while the policy owns walking / Ts / twist (read by the GUI, joystick and datastore guards). */
-  bool ownsWalking() const noexcept { return state_ == PolicyState::Active || state_ == PolicyState::Releasing; }
+  bool ownsWalking() const noexcept { return state_ == PolicyState::Active; }
 
   /** True if this build links ONNX Runtime (ISMPC_WITH_POLICY=ON). */
   static bool builtWithOnnxRuntime() noexcept;
@@ -126,11 +124,10 @@ private:
   std::string resolve(const std::string & file) const;
   void buildGui();
   void rebuildLog() noexcept; // controller thread (from tick()): drops and re-adds this object's log entries
-  void debugTick() noexcept; // TEMPORARY (step 6): shadow inference + z-score monitor + 1 Hz log while Ready
   void activate() noexcept;  // controller thread: Ready -> Active (or refuse, with lastError)
   void activeTick() noexcept; // controller thread: the Active loop
-  // Active -> Ready at once. Walking is always stopped (Stop = true); failure also sets lastError and logs an error.
-  // Step 8 adds the ramps.
+  // Active -> Ready at once, no ramps. Walking is always stopped (Stop = true); failure also sets lastError and logs
+  // an error.
   void release(const std::string & reason, bool failure) noexcept;
 
   Options options_;
@@ -156,13 +153,10 @@ private:
   std::unique_ptr<ActionDecoder> decoder_; // latch bookkeeping and the current (previous-latch) command
   std::vector<double> obs_;  // observation being built (contract order), sized at load
   std::vector<float> obsF_;  // the same, cast to float32 for the network
-  long debugTicks_ = 0;
-  // TEMPORARY (step 6B.2, removed in step 9): shadow inference state, only used by debugTick()
   std::unique_ptr<ZScoreMonitor> zmon_;
   ActionDecoder::Raw lastRaw_{}; // last raw network output
-  long latchCount_ = 0;          // shadow latches since load
+  long latchCount_ = 0;          // latches since activation
   double inferSumUs_ = 0, inferMaxUs_ = 0; // per-latch inference time (build excluded)
-  std::string shadowError_;      // last shadow failure, reported once per second, "" when fine
 };
 
 } // namespace ismpc_walking::policy

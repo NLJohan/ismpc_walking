@@ -267,7 +267,6 @@ Walking_controller::Walking_controller(mc_rbdyn::RobotModulePtr rm,
       const auto policyConfig = config("policy");
       policyOptions.dir = policyConfig("dir", std::string(""));
       policyOptions.file = policyConfig("file", std::string(""));
-      policyOptions.debug_no_apply = policyConfig("debug_no_apply", false); // TEMPORARY, removed in step 9
     }
     auto adapter = std::make_unique<ismpc_walking::policy::ControllerAdapter>(*this);
     auto * sink = adapter.get(); // write side of the same object; the runner owns it as its StateSource

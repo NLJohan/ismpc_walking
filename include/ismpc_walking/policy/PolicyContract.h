@@ -28,7 +28,7 @@ struct ActionConstants
   double frequency_scale = 0, frequency_bias = 0, frequency_min = 0, frequency_max = 0;
   double amplitude_scale = 0;
   double walk_gate_bias = 0;
-  double ts_scale = 0, ts_bias = 0, ts_min = 0, ts_max = 0, ts_default = 0;
+  double ts_scale = 0, ts_bias = 0, ts_min = 0, ts_max = 0;
   std::array<double, 3> twist_scale{};
   std::array<double, 2> twist_raw_clamp{};
   /** nullopt (JSON null) means: the twist is not rate limited. */
@@ -62,7 +62,6 @@ struct PolicyContract
   int version = 0;
   std::string checkpoint_stem;
   long iteration = -1;
-  std::string git_hash;
 
   double controller_dt = 0;
   int latch_ticks = 0;

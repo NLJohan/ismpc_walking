@@ -12,8 +12,6 @@ namespace ismpc_walking::policy
 
 namespace
 {
-// Body sensor named in the ObserverPipelines block of ismpc_walking.in.yaml (diagnostics only).
-constexpr const char * kGyroSensor = "FloatingBase";
 // mbIndex_ value for a contract joint that has no single DoF in the robot model (mbc.alpha not readable).
 constexpr size_t kNoMbIndex = static_cast<size_t>(-1);
 
@@ -66,7 +64,7 @@ bool ControllerAdapter::bind(const std::vector<std::string> & contract_joints, s
         return false;
       }
       // joint_pos / joint_vel come from encoderValues() / encoderVelocities() by refJointOrder index, so a joint
-      // without a single DoF in the model is still readable. Only the mbc.alpha diagnostic needs one DoF.
+      // without a single DoF in the model is still readable. Only the mbc.alpha fallback for joint_vel needs one DoF.
       const auto mi = robot.jointIndexByName(name);
       const int dof = robot.mb().joint(static_cast<int>(mi)).dof();
       ref.push_back(it->second);
@@ -159,27 +157,11 @@ bool ControllerAdapter::read(RobotState & out, std::string & err) noexcept
     const size_t n = refIndex_.size();
     out.joint_pos.assign(n, 0.);
     out.joint_vel.assign(n, 0.);
-    out.diag = RobotState::Diagnostics{};
-    out.diag.encoder_vel_max_abs = haveEncVel ? 0. : -1.;
     for(size_t i = 0; i < n; ++i)
     {
       out.joint_pos[i] = enc[refIndex_[i]];
-      const double a = (mbIndex_[i] == kNoMbIndex) ? 0. : alpha[mbIndex_[i]][0];
-      out.diag.alpha_max_abs = std::max(out.diag.alpha_max_abs, std::fabs(a));
-      if(haveEncVel)
-      {
-        const double v = encVel[refIndex_[i]];
-        out.diag.encoder_vel_max_abs = std::max(out.diag.encoder_vel_max_abs, std::fabs(v));
-        out.joint_vel[i] = v;
-      }
-      else { out.joint_vel[i] = a; }
-    }
-    out.diag.joint_vel_source = haveEncVel ? "encoderVelocities()" : "mbc.alpha (encoderVelocities() is empty)";
-
-    if(robot.hasBodySensor(kGyroSensor))
-    {
-      out.diag.has_gyro = true;
-      out.diag.gyro = toVec3(robot.bodySensor(kGyroSensor).angularVelocity());
+      if(haveEncVel) { out.joint_vel[i] = encVel[refIndex_[i]]; }
+      else { out.joint_vel[i] = (mbIndex_[i] == kNoMbIndex) ? 0. : alpha[mbIndex_[i]][0]; } // fallback: mbc.alpha
     }
     return true;
   }
@@ -240,7 +222,7 @@ void ControllerAdapter::releaseOwnership() noexcept
 {
   if(!owning_) { return; }
   // Back to the manual defaults, so nothing the policy last wrote is left frozen in the controller (CoM height sine,
-  // Ts, RL twist). Immediate, no ramp (ramps are step 8). Stop is already set by PolicyRunner::release() (walk gate off).
+  // Ts, RL twist). Immediate, no ramp. Stop is already set by PolicyRunner::release() (walk gate off).
   auto & solver = ctl_.ismpc_solver();
   solver.SetOffset(kManualOffset);
   solver.SetFrequency(0.);

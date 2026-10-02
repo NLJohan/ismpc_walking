@@ -14,7 +14,6 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
-#include <cstdlib>
 #include <limits>
 
 #ifdef ISMPC_WITH_POLICY
@@ -31,7 +30,6 @@ const char * toString(PolicyState s) noexcept
     case PolicyState::NoPolicy: return "NoPolicy";
     case PolicyState::Ready: return "Ready";
     case PolicyState::Active: return "Active";
-    case PolicyState::Releasing: return "Releasing";
   }
   return "?";
 }
@@ -93,7 +91,6 @@ bool PolicyRunner::fail(const std::string & path, const std::string & msg)
   obsF_.clear();
   latchCount_ = 0;
   inferSumUs_ = inferMaxUs_ = 0;
-  shadowError_.clear();
   contract_ = PolicyContract{};
   loadedFile_.clear();
   benchAvgUs_ = benchMaxUs_ = 0;
@@ -107,7 +104,7 @@ bool PolicyRunner::fail(const std::string & path, const std::string & msg)
 
 bool PolicyRunner::unload()
 {
-  if(state_ == PolicyState::Active || state_ == PolicyState::Releasing)
+  if(state_ == PolicyState::Active)
   {
     mc_rtc::log::warning("[ismpc_policy] cannot unload while {}", toString(state_));
     return false;
@@ -120,7 +117,6 @@ bool PolicyRunner::unload()
   obsF_.clear();
   latchCount_ = 0;
   inferSumUs_ = inferMaxUs_ = 0;
-  shadowError_.clear();
   contract_ = PolicyContract{};
   loadedFile_.clear();
   lastError_.clear();
@@ -133,7 +129,7 @@ bool PolicyRunner::unload()
 
 bool PolicyRunner::load(const std::string & file)
 {
-  if(state_ == PolicyState::Active || state_ == PolicyState::Releasing)
+  if(state_ == PolicyState::Active)
   {
     mc_rtc::log::warning("[ismpc_policy] cannot load a model while {}", toString(state_));
     return false;
@@ -196,8 +192,7 @@ bool PolicyRunner::load(const std::string & file)
   obsF_.assign(static_cast<size_t>(contract.obs_dim), 0.f);
   contract_ = std::move(contract);
   decoder_ = std::make_unique<ActionDecoder>(contract_);
-  zmon_ = std::make_unique<ZScoreMonitor>(contract_, builder_->terms());
-  debugTicks_ = 0;
+  zmon_ = std::make_unique<ZScoreMonitor>(contract_);
   loadedFile_ = path;
   lastError_.clear();
   benchAvgUs_ = sumUs / kBenchRuns;
@@ -212,21 +207,6 @@ bool PolicyRunner::load(const std::string & file)
       contract_.latch_ticks, contract_.controller_dt,
       contract_.action.twist_max_delta_per_latch ? "yes" : "none", sumUs / kBenchRuns, maxUs, kBenchRuns);
 
-  // TEMPORARY (step 5 parity test, removed in step 9): replay a raw action file through the ActionDecoder.
-  if(const char * parityIn = std::getenv("ISMPC_DECODER_PARITY_IN"))
-  {
-    const char * parityOut = std::getenv("ISMPC_DECODER_PARITY_OUT");
-    std::string perr;
-    if(!parityOut) { perr = "ISMPC_DECODER_PARITY_OUT is not set"; }
-    if(parityOut && runDecoderParity(contract_, parityIn, parityOut, perr))
-    {
-      mc_rtc::log::info("[ismpc_policy] decoder parity: wrote {}", parityOut);
-    }
-    else
-    {
-      mc_rtc::log::error("[ismpc_policy] decoder parity failed: {}", perr);
-    }
-  }
   return true;
 }
 
@@ -270,18 +250,10 @@ void PolicyRunner::tick() noexcept
     default: break;
   }
   if(state_ == PolicyState::Active) { activeTick(); }
-  else if(state_ == PolicyState::Ready && options_.debug_no_apply) { debugTick(); }
 }
 
 namespace
 {
-std::string fmtVec3(const Vec3 & v)
-{
-  char buf[96];
-  std::snprintf(buf, sizeof(buf), "[%+.3f %+.3f %+.3f]", v[0], v[1], v[2]);
-  return buf;
-}
-
 std::string fmtN(const double * v, int n)
 {
   std::string out = "[";
@@ -294,162 +266,6 @@ std::string fmtN(const double * v, int n)
   return out + "]";
 }
 } // namespace
-
-// TEMPORARY (steps 6A to 6B, removed in step 9). While Ready with policy.debug_no_apply the policy runs in shadow:
-//  - every controller step the latch counter advances (same seed as training);
-//  - on a latch step the observation is built, the network is run, the action is decoded and latched (so the last_*
-//    terms evolve as in a real run) and the z-score monitor looks at the observation the network saw;
-//  - once per second everything is logged.
-// It reads the robot only: nothing is written to the controller.
-void PolicyRunner::debugTick() noexcept
-{
-  try
-  {
-    if(!source_ || !builder_ || !backend_ || !decoder_ || !zmon_) { return; }
-    const long every = std::max<long>(1, std::lround(1.0 / options_.controller_dt));
-    ++debugTicks_;
-    const bool latchDue = decoder_->advance();
-    const bool logDue = (debugTicks_ % every == 0);
-    if(!latchDue && !logDue) { return; }
-
-    // Failures are remembered and reported in the once-per-second line, so a persistent one cannot flood the log.
-    auto failStep = [&](const std::string & msg) {
-      shadowError_ = msg;
-      if(logDue) { mc_rtc::log::warning("[ismpc_policy] debug obs: {}", msg); }
-    };
-
-    RobotState s;
-    std::string err;
-    if(!source_->read(s, err)) { return failStep(err); }
-    if(!builder_->build(s, decoder_->current(), obs_, err) || !ObservationBuilder::toFloat(obs_, obsF_, err))
-    {
-      return failStep(err);
-    }
-
-    if(latchDue)
-    {
-      std::array<float, PolicyContract::kActionDim> act{};
-      const auto t0 = std::chrono::steady_clock::now();
-      const bool ran = backend_->infer(obsF_.data(), act.data(), err);
-      const double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count();
-      if(!ran) { return failStep("shadow inference failed: " + err); }
-      ActionDecoder::Raw raw{};
-      for(size_t i = 0; i < raw.size(); ++i) { raw[i] = static_cast<double>(act[i]); }
-      if(!decoder_->latch(raw)) { return failStep("shadow inference returned a non finite value"); }
-      lastRaw_ = raw;
-      shadowError_.clear();
-      ++latchCount_;
-      inferSumUs_ += us;
-      inferMaxUs_ = std::max(inferMaxUs_, us);
-      zmon_->update(obs_); // obs_ is still the observation the network just saw
-      if(latchCount_ == 1)
-      {
-        if(!zmon_->available())
-        {
-          mc_rtc::log::warning("[ismpc_policy] z-score monitor: the contract has no normalizer, no z-scores");
-        }
-        else
-        {
-          const auto & off = zmon_->offenders();
-          std::string list;
-          constexpr size_t kListed = 30;
-          for(size_t i = 0; i < off.size() && i < kListed; ++i)
-          {
-            char buf[48];
-            std::snprintf(buf, sizeof(buf), "=%.1f", off[i].z);
-            list += (i ? ", " : "") + zmon_->elementName(off[i].index) + buf;
-          }
-          mc_rtc::log::info("[ismpc_policy] z-score first latch: {} of {} elements with |z| > {:.0f}{}{}", off.size(),
-                            contract_.obs_dim, ZScoreMonitor::kWarn, off.empty() ? "" : ": ", list);
-        }
-      }
-    }
-
-    if(!logDue) { return; }
-
-    auto worst = [&](const char * term, std::string & name) {
-      const auto * t = builder_->find(term);
-      double m = 0;
-      name = "-";
-      if(!t) { return m; }
-      for(int i = 0; i < t->dim; ++i)
-      {
-        const double a = std::fabs(obs_[static_cast<size_t>(t->offset + i)]);
-        if(a > m)
-        {
-          m = a;
-          name = contract_.joint_names[static_cast<size_t>(i)];
-        }
-      }
-      return m;
-    };
-    std::string posName, velName;
-    const double posMax = worst("joint_pos", posName);
-    const double velMax = worst("joint_vel", velName);
-    const std::string gyro = s.diag.has_gyro ? fmtVec3(s.diag.gyro) : std::string("n/a");
-    mc_rtc::log::info(
-        "[ismpc_policy] debug obs | com_lin_vel {} | base_ang_vel {} (velW) gyro {} | gravity {} | "
-        "joint_pos max|.| {:.4f} ({}) | joint_vel max|.| {:.4f} ({}) from {} | encoder vel max {:.4f} alpha max {:.4f}",
-        fmtVec3(s.com_lin_vel), fmtVec3(s.base_ang_vel), gyro, fmtVec3(s.projected_gravity), posMax, posName, velMax,
-        velName, s.diag.joint_vel_source, s.diag.encoder_vel_max_abs, s.diag.alpha_max_abs);
-
-    // Latched / command terms, as they sit in the observation vector the network last saw.
-    auto slice = [&](const char * term) {
-      const auto * t = builder_->find(term);
-      return t ? obs_.data() + t->offset : nullptr;
-    };
-    const double * sine = slice("last_sine_params");
-    const double * walk = slice("last_walk_action");
-    const double * ts = slice("last_step_timing_action");
-    const double * twist = slice("last_twist_action");
-    const double * stop = slice("ismpc_wants_stop");
-    const double * target = slice("target_twist");
-    if(sine && walk && ts && twist && stop && target)
-    {
-      mc_rtc::log::info(
-          "[ismpc_policy] debug obs | last_sine {} walk {:.0f} ts {:.3f} last_twist {} | wants_stop {:.0f} | "
-          "target_twist raw {} -> obs {} | float32 vector of {} values ok",
-          fmtN(sine, 4), *walk, *ts, fmtN(twist, 3), *stop, fmtVec3(s.target_twist), fmtN(target, 3), obsF_.size());
-    }
-
-    // Shadow policy: what the network says, and how long it took.
-    if(latchCount_ > 0)
-    {
-      const auto & d = decoder_->current();
-      mc_rtc::log::info(
-          "[ismpc_policy] shadow | latches {} | raw {} | decoded offset {:.3f} freq {:.3f} sin {:.4f} cos {:.4f} walk {} "
-          "ts {:.3f} twist {} | inference avg {:.1f} us max {:.1f} us{}{}",
-          latchCount_, fmtN(lastRaw_.data(), static_cast<int>(lastRaw_.size())), d.offset, d.frequency, d.sin_amp,
-          d.cos_amp, d.walk ? 1 : 0, d.ts, fmtN(d.twist.data(), 3), inferSumUs_ / static_cast<double>(latchCount_),
-          inferMaxUs_, shadowError_.empty() ? "" : " | LAST ERROR: ", shadowError_);
-    }
-    else if(!shadowError_.empty())
-    {
-      mc_rtc::log::warning("[ismpc_policy] shadow: no latch yet, last error: {}", shadowError_);
-    }
-
-    // z-score monitor: max |z| per term over the latches since the last line.
-    if(zmon_->available() && latchCount_ > 0)
-    {
-      std::string line;
-      const auto & run = zmon_->runningMax();
-      for(size_t ti = 0; ti < run.size(); ++ti)
-      {
-        char buf[32];
-        std::snprintf(buf, sizeof(buf), " %.1f", run[ti].z);
-        // name the element only where it helps: an offender inside a multi-element term
-        const bool named = run[ti].z > ZScoreMonitor::kWarn && zmon_->terms()[ti].dim > 1;
-        line += (ti ? " | " : "") + (named ? zmon_->termElementName(ti, run[ti].elem) : zmon_->terms()[ti].name) + buf;
-      }
-      mc_rtc::log::info("[ismpc_policy] z max since last line | {} | elements > {:.0f} at last latch: {}", line,
-                        ZScoreMonitor::kWarn, zmon_->offenders().size());
-      zmon_->resetRunning();
-    }
-  }
-  catch(...)
-  {
-  }
-}
 
 void PolicyRunner::activate() noexcept
 {
@@ -470,12 +286,10 @@ void PolicyRunner::activate() noexcept
     // Activation is training's episode reset: counter seeded to 1 (first latch on the 10th step), command back to
     // the reset defaults, so the first thing applied is offset 0.9, frequency 0, amplitudes 0, walk off, Ts 1.1, twist 0.
     decoder_->reset();
-    zmon_->resetRunning();
     lastRaw_ = ActionDecoder::Raw{};
     latchCount_ = 0;
     inferSumUs_ = inferMaxUs_ = 0;
-    shadowError_.clear();
-    activeTicks_ = 0;
+      activeTicks_ = 0;
     lastError_.clear();
     sink_->takeOwnership();
     sink_->startObsFilters(contract_.obs_filter_cutoff_T); // as training's episode reset, with the trained cutoff
@@ -572,7 +386,7 @@ void PolicyRunner::activeTick() noexcept
     if(activeTicks_ % every == 0)
     {
       const auto & d = decoder_->current();
-      const size_t nOff = zmon_->available() ? zmon_->offenders().size() : size_t(0);
+      const size_t nOff = zmon_->available() ? zmon_->offenderCount() : size_t(0);
       mc_rtc::log::info(
           "[ismpc_policy] active | latches {} | applied: walk {} offset {:.3f} freq {:.3f} sin {:.4f} cos {:.4f} "
           "ts {:.3f} twist {} | elements |z| > {:.0f}: {} | inference avg {:.1f} us max {:.1f} us",
@@ -735,7 +549,7 @@ void PolicyRunner::addGui(mc_rtc::gui::StateBuilder & gui, const std::vector<std
 
 void PolicyRunner::buildGui()
 {
-  auto busy = [this]() { return state_ == PolicyState::Active || state_ == PolicyState::Releasing; };
+  auto busy = [this]() { return state_ == PolicyState::Active; };
   gui_->addElement(
       guiCategory_,
       mc_rtc::gui::Checkbox(
