@@ -1089,12 +1089,16 @@ void Walking_controller::UpdateInitialVectors()
       zmp_frame = sva::interpolate(robot().surfacePose(supportFootName), robot().surfacePose(swingFootName), 0.5);
     }
     Eigen::Vector3d zmp_vel = mpc_state_.p_z_k;
-    // p_z_k is the MPC's planned ZMP here when a trajectory exists (set above); the measurement overwrites it.
-    const Eigen::Vector3d zmp_planned = mpc_state_.p_z_k;
-    robot().zmp(mpc_state_.p_z_k, measured_net_wrench, zmp_frame);
-    if(UseMPCState && mpc_state_.X_MPC.size() != 0)
+    const bool zmp_measured_ok = robot().zmp(mpc_state_.p_z_k, measured_net_wrench, zmp_frame);
+    // RL observation: |measured ZMP - planned ZMP|.xy at THIS controller step, 0 when no MPC trajectory exists.
+    // Measured = the ZMP just computed above from this step's force sensors (p_z_k now holds it). Planned = zmpTarget,
+    // set by MoveCoM() earlier in this same locked section for the same Index (the log's ISMPC_Target_ZMP). The
+    // stabilizer's own measuredZMP() is NOT used: it is only refreshed later, when the solver runs at the end of
+    // run(), so here it would still hold the previous step's value. If the ZMP cannot be computed (not enough
+    // vertical force) the sample is non finite and the filter holds its last value.
+    if(mpc_state_.X_MPC.size() != 0)
     {
-      obsZmpErrorNorm = (mpc_state_.p_z_k - zmp_planned).head<2>().norm();
+      obsZmpErrorNorm = zmp_measured_ok ? (mpc_state_.p_z_k - zmpTarget).head<2>().norm() : std::nan("");
     }
     zmp_vel = (mpc_state_.p_z_k - zmp_vel) / controller_timestep;
     zmp_vel_.append(zmp_vel);
