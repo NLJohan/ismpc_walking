@@ -240,7 +240,7 @@ void ControllerAdapter::releaseOwnership() noexcept
 {
   if(!owning_) { return; }
   // Back to the manual defaults, so nothing the policy last wrote is left frozen in the controller (CoM height sine,
-  // Ts, RL twist). Immediate, no ramp (ramps are step 8). Stop is deliberately left as the policy set it.
+  // Ts, RL twist). Immediate, no ramp (ramps are step 8). Stop is already set by PolicyRunner::release() (walk gate off).
   auto & solver = ctl_.ismpc_solver();
   solver.SetOffset(kManualOffset);
   solver.SetFrequency(0.);

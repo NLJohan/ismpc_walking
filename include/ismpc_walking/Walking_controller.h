@@ -657,6 +657,8 @@ private:
   // True (with a warning naming `what`) while the policy owns walking: the manual start/stop and mode writers
   // (GUI buttons and checkboxes, joystick A, start_stop(), the datastore entry) return early on it.
   bool blockedByPolicy(const char * what) noexcept;
+  // One-way joystick safety (Y / Triangle): releases the policy and stops walking. Never activates it.
+  void policyEmergencyRelease() noexcept;
 
   std::mutex mutex_mpc_;
   MPC_state mpc_thread_state;

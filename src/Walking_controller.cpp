@@ -300,6 +300,11 @@ bool Walking_controller::blockedByPolicy(const char * what) noexcept
   return true;
 }
 
+void Walking_controller::policyEmergencyRelease() noexcept
+{
+  if(policy_) { policy_->requestEmergencyRelease(); }
+}
+
 bool Walking_controller::wait_for_mpc_thread()
 {
   if(!MPC_thread_ready)

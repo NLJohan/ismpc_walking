@@ -94,6 +94,13 @@ public:
   bool setActive(bool on);
 
   /**
+   * One-way emergency release (joystick Y / Triangle). Only queues a request, served by tick() in the same controller
+   * step. If the policy is Active it is released and walking is stopped; a still queued activation is cancelled;
+   * otherwise nothing happens. It can never activate the policy.
+   */
+  void requestEmergencyRelease() noexcept;
+
+  /**
    * Registers the policy entries in the mc_rtc log (inputs, raw outputs, physical outputs, see rebuildLog()). Call
    * once from Walking_controller::AddToLog(), on the controller thread. The entries follow the loaded model: they are
    * rebuilt from the contract on every load / unload, so a changed observation or action needs no code change here.
@@ -122,7 +129,8 @@ private:
   void debugTick() noexcept; // TEMPORARY (step 6): shadow inference + z-score monitor + 1 Hz log while Ready
   void activate() noexcept;  // controller thread: Ready -> Active (or refuse, with lastError)
   void activeTick() noexcept; // controller thread: the Active loop
-  // Active -> Ready at once. failure: stop walking, set lastError and log an error. Step 8 adds the ramps.
+  // Active -> Ready at once. Walking is always stopped (Stop = true); failure also sets lastError and logs an error.
+  // Step 8 adds the ramps.
   void release(const std::string & reason, bool failure) noexcept;
 
   Options options_;
@@ -137,7 +145,7 @@ private:
   bool guiRebuildPending_ = false; // rebuilt from tick(): never remove GUI elements from inside their own callback
   std::atomic<PolicyState> state_{PolicyState::NoPolicy}; // read from the GUI/joystick side too
   ControlSink * sink_ = nullptr; // not owned: same object as source_
-  std::atomic<int> request_{0};  // 0 none, 1 activate, 2 release: set by setActive(), consumed by tick()
+  std::atomic<int> request_{0};  // 0 none, 1 activate, 2 release, 3 emergency release: consumed by tick()
   long activeTicks_ = 0;         // controller steps since activation
   std::string lastError_;
   std::string loadedFile_;

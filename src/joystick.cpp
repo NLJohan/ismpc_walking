@@ -27,6 +27,12 @@ void Walking_controller::JoystickInputs()
           deactivate();
         }
       }
+      // Policy safety stop: Y (Xbox) / Triangle (PS). One way only: it switches the policy off and stops walking,
+      // and does nothing when the policy is not active, so it can never switch the policy on.
+      if(buttonEvent_func(joystickButtonInputs::X) && button_func(joystickButtonInputs::X))
+      {
+        policyEmergencyRelease();
+      }
       if(buttonEvent_func(joystickButtonInputs::B) && button_func(joystickButtonInputs::B))
       {
         mc_rtc::log::error_and_throw<std::runtime_error>("Hard Emergency triggered");

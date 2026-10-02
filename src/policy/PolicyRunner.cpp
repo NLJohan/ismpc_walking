@@ -260,6 +260,13 @@ void PolicyRunner::tick() noexcept
     case 2:
       if(state_ == PolicyState::Active) { release("the policy was switched off", false); }
       break;
+    case 3: // emergency release; also cancels an activation that was still queued (that request was replaced)
+      if(state_ == PolicyState::Active)
+      {
+        mc_rtc::log::warning("[ismpc_policy] emergency release (joystick Y / Triangle): policy off, walking stopped");
+        release("emergency release from the joystick (Y / Triangle)", false);
+      }
+      break;
     default: break;
   }
   if(state_ == PolicyState::Active) { activeTick(); }
@@ -487,7 +494,7 @@ void PolicyRunner::release(const std::string & reason, bool failure) noexcept
     if(state_ != PolicyState::Active) { return; }
     if(sink_)
     {
-      if(failure) { sink_->applyWalkGate(false); } // stop walking
+      sink_->applyWalkGate(false); // every release stops walking (Stop = true); the user restarts it by hand
       sink_->releaseOwnership();
     }
     state_ = PolicyState::Ready;
@@ -498,7 +505,7 @@ void PolicyRunner::release(const std::string & reason, bool failure) noexcept
     }
     else
     {
-      mc_rtc::log::info("[ismpc_policy] state=Ready: {}", reason);
+      mc_rtc::log::info("[ismpc_policy] state=Ready (Stop set): {}", reason);
     }
   }
   catch(...)
@@ -712,6 +719,11 @@ bool PolicyRunner::setActive(bool on)
   if(state_ != PolicyState::Active) { return false; }
   request_ = 2;
   return true;
+}
+
+void PolicyRunner::requestEmergencyRelease() noexcept
+{
+  if(state_ == PolicyState::Active || request_.load() == 1) { request_ = 3; }
 }
 
 void PolicyRunner::addGui(mc_rtc::gui::StateBuilder & gui, const std::vector<std::string> & category)
