@@ -1294,12 +1294,6 @@ void Walking_controller::reset(const mc_control::ControllerResetData & reset_dat
   // p_c_k/p_z_k/p_u/v_c_k re-apply below, order doesn't matter relative to
   // it, but must be present every reset.
   MPCSolver.ResetEpisodeState();
-  // Bound the Logger's internal add/removed-key event journal at episode
-  // boundaries: log_events_ is only drained by Logger::log() on the normal
-  // per-tick cadence, which may not run every tick in this setup (e.g. with
-  // logging disabled), so it can otherwise grow unboundedly across a long
-  // training run via repeated StabilizerTask::updateContacts() calls.
-  logger().clearEvents();
   // Second dump, same tag family, immediately after ResetEpisodeState(): proves
   // (rather than assumes) that the reset actually took effect this call, in the
   // same log, right next to the pre-reset "inherited" dump above. NOTE: count is
@@ -1424,6 +1418,14 @@ void Walking_controller::reset(const mc_control::ControllerResetData & reset_dat
   autoStart = false;
   // DEBUG (temporary): arm the post-reset settle comparison window.
   debug_ticks_since_reset_ = 0;
+
+  // Bound the Logger's key add/remove event journal when nothing else drains it.
+  // Only Logger::log() empties it, and it only runs per tick once a log file has been opened (Logger::start/open).
+  // With logging off (training under mc_mjlab) every StabilizerTask::updateContacts() add/remove would pile up for
+  // the whole run, so drain it here through the public log(). Done last so the activate() above is covered.
+  // Skipped whenever a log file is open (mc_mujoco, real robot): log() then runs on its normal cadence and an extra
+  // call would add a row and advance "t". Uses only the stock mc_rtc Logger API.
+  if(logger().path().empty()) { logger().log(); }
 
   // mc_rtc::log::warning(
   //     "[reset] EXIT  Robot_Walking={} active={} Stop={} t_k={} count={} ref_vel=({},{},{}) N_Steps={} "
