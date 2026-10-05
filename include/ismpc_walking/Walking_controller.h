@@ -659,6 +659,8 @@ private:
   bool blockedByPolicy(const char * what) noexcept;
   // One-way joystick safety (Y / Triangle): releases the policy and stops walking. Never activates it.
   void policyEmergencyRelease() noexcept;
+  // Controller steps since the last periodic Logger journal drain (see run()).
+  int logDrainTicks_ = 0;
 
   std::mutex mutex_mpc_;
   MPC_state mpc_thread_state;

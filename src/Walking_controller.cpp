@@ -704,6 +704,16 @@ bool Walking_controller::run()
 {
   JoystickInputs();
   policy_->tick(); // before wait_for_mpc_thread(): counts every controller step
+
+  // Periodic drain of the Logger's key add/remove journal (about once per second of controller time).
+  // Same condition and reasoning as the drain at the end of reset(): with no log file open (training) nothing else
+  // empties the journal, so repeated add/remove of log entries would grow it for the whole episode. With a log file
+  // open (mc_mujoco, real robot) the condition is false and the Logger behaves exactly as stock.
+  if(++logDrainTicks_ >= std::max(1, static_cast<int>(std::lround(1.0 / timeStep))))
+  {
+    logDrainTicks_ = 0;
+    if(logger().path().empty()) { logger().log(); }
+  }
   if(!wait_for_mpc_thread())
   {
     return mc_control::fsm::Controller::run();
