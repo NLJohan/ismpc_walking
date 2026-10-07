@@ -647,6 +647,36 @@ protected:
   // ComputeWalkingTrajectory(). Not behavior -- purely a counter.
   int debug_ticks_since_reset_ = -1;
   static constexpr int kDebugSettleWindow = 10;
+  // DEBUG (temporary): number of run() ticks already dumped since the last reset(); -1 = never reset. Only used
+  // by the CSV dump in Walking_controller.cpp (resetDumpRow). Not behavior.
+  int dump_ticks_since_reset_ = -1;
+  // DEBUG (temporary): controller-state event log (/tmp/ismpc_state_dump_<pid>.csv, see stateDump() in
+  // Walking_controller.cpp). state_dump_ticks_ counts run() ticks since the last reset(); -1 = never reset.
+  // Atomic because the MPC thread reads it to decide whether to log a solve. Not behavior.
+  static constexpr int kStateDumpTicks = 1000;
+  std::atomic<int> state_dump_ticks_{-1};
+  bool stateDumpWindow() const
+  {
+    const int k = state_dump_ticks_.load();
+    return k >= 0 && k < kStateDumpTicks;
+  }
+  // Same window, but every tick for the first 100 and every 10th afterwards.
+  bool stateDumpThin() const
+  {
+    const int k = state_dump_ticks_.load();
+    return k >= 0 && k < kStateDumpTicks && (k < 100 || k % 10 == 0);
+  }
+  // DEBUG (temporary): brute-force full-state text dump to /tmp/ismpc_full_dump_<pid>.txt (see FullDump.h and
+  // fullDump() in Walking_controller.cpp). mode bits: 1 = flags + both robots + mpc_state_ (controller thread
+  // only), 2 = mpc_thread_state (only with no concurrent writer: the MPC thread itself, or after it was joined),
+  // 4 = ISMPC_Solver::DumpState. The counters limit the per-solve dumps to the first 2 solves after each reset()
+  // plus the first failed solve; the initial 1000 / true keep it silent until the first reset(). Not behavior.
+  void fullDump(const std::string & tag, int mode);
+  // DEBUG (temporary): small one-section dump of the SLOW estimators/disturbance state (DCM bias, ComBias, w_/kappa_)
+  // that could carry a past push into later episodes. Controller thread only. See estimatorDump() in the .cpp.
+  void estimatorDump(const std::string & tag);
+  std::atomic<int> full_dump_solves_since_reset_{1000};
+  std::atomic<bool> full_dump_fail_done_{true};
 
 private:
   // ONNX policy runner. Constructor/destructor are defined in Walking_controller.cpp,

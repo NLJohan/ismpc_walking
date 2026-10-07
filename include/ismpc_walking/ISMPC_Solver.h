@@ -172,8 +172,21 @@ public:
    * Does NOT touch m_feasibilitySolver's own internal state -- that is a
    * separate, not-yet-investigated persistence risk (see feasibility
    * solver work, tracked separately).
+   *
+   * Also restores the RL/disturbance INPUTS (CoM-height sine params, w_k,
+   * kappa, ...) that the policy/datastore overwrite only AFTER the first
+   * post-reset solve has already started: without this the first solve
+   * consumes the previous episode's last values (e.g. an 8 Hz CoM-height
+   * sine -> sqrt of a negative in eta -> NaN QP -> permanent deactivate()).
+   *
+   * THREADING: must only be called while the MPC thread is NOT running
+   * (i.e. after Walking_controller::reset() has joined it). It writes
+   * members the MPC thread reads/writes without any lock.
+   *
+   * @param com_height_offset neutral CoM height written to
+   *        m_rl_com_z_offset (the sine amplitude/frequency are set to 0).
    */
-  void ResetEpisodeState();
+  void ResetEpisodeState(double com_height_offset);
 
   /**
    * Dump EVERY private/protected member of this class via mc_rtc::log::warning,
