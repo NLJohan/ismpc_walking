@@ -2,16 +2,6 @@
 #include <mc_control/Configuration.h>
 #include "ismpc_walking/policy/ControllerAdapter.h"
 #include "ismpc_walking/policy/PolicyRunner.h"
-#include "ismpc_walking/FullDump.h"
-
-#include <chrono>
-#include <cmath>
-#include <fstream>
-#include <initializer_list>
-#include <mutex>
-#include <string>
-#include <utility>
-#include <unistd.h>
 
 #ifdef __linux__
 
@@ -37,39 +27,6 @@ void reset_affinity()
 void reset_affinity() {}
 
 #endif
-
-// DEBUG (temporary): controller-state event log, written from BOTH the controller thread and the MPC thread.
-// One file per process: /tmp/ismpc_state_dump_<pid>.csv. Row format (variable columns, parse the key=value cells):
-//   t_ms,tag,self,count,key=value,key=value,...
-// t_ms is milliseconds since the first row of this process (steady clock), so thread events interleave correctly.
-// Remove together with the call sites.
-namespace
-{
-inline double dv(double v)
-{
-  return v;
-}
-
-void stateDump(const void * self,
-               const char * tag,
-               int count_now,
-               std::initializer_list<std::pair<const char *, double>> kv)
-{
-  static std::mutex mtx;
-  static std::ofstream out;
-  static const auto t0 = std::chrono::steady_clock::now();
-  std::lock_guard<std::mutex> lk(mtx);
-  if(!out.is_open())
-  {
-    out.open("/tmp/ismpc_state_dump_" + std::to_string(::getpid()) + ".csv", std::ios::out | std::ios::trunc);
-  }
-  const double t_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-  out << t_ms << ',' << tag << ',' << self << ',' << count_now;
-  for(const auto & p : kv) { out << ',' << p.first << '=' << p.second; }
-  out << '\n';
-  out.flush();
-}
-} // namespace
 
 Walking_controller::~Walking_controller()
 {
@@ -488,47 +445,7 @@ void Walking_controller::ComputeWalkingTrajectory()
   //     realRobot().comVelocity().y(), realRobot().comVelocity().z(), mpc_thread_state.ComBias.x(),
   //     mpc_thread_state.ComBias.y(), mpc_thread_state.ComBias.z(),
   //     mpc_thread_state.getEta(static_cast<size_t>(mpc_thread_state.Index)), mpc_thread_state.Index);
-  // DEBUG (temporary): inputs of this solve (MPC thread).
-  if(stateDumpWindow())
-  {
-    const auto & pl_ts = mpc_thread_state.planned_timesteps_;
-    const bool has_v = !mpc_thread_state.input_v_.empty();
-    stateDump(this, "solve_begin", count,
-              {{"tick", dv(state_dump_ticks_.load())},
-               {"planned_steps_n", dv(mpc_thread_state.planned_steps_.size())},
-               {"planned_ts_n", dv(pl_ts.size())},
-               {"planned_ts0", dv(pl_ts.empty() ? 0.0 : pl_ts.front())},
-               {"tds", dv(tds)},
-               {"Steps", dv(Steps)},
-               {"Steps_Desired", dv(Steps_Desired)},
-               {"Stop", dv(Stop)},
-               {"dbl_support", dv(doubleSupport_state)},
-               {"mpc_stop", dv(mpc_thread_state.stop)},
-               {"t_k", dv(mpc_thread_state.t_k)},
-               {"Index", dv(mpc_thread_state.Index)},
-               {"vck_x", dv(mpc_thread_state.v_c_k.x())},
-               {"vck_y", dv(mpc_thread_state.v_c_k.y())},
-               {"pck_x", dv(mpc_thread_state.p_c_k.x())},
-               {"pck_y", dv(mpc_thread_state.p_c_k.y())},
-               {"pck_z", dv(mpc_thread_state.p_c_k.z())},
-               {"pu_x", dv(mpc_thread_state.p_u.x())},
-               {"pu_y", dv(mpc_thread_state.p_u.y())},
-               {"pzk_x", dv(mpc_thread_state.p_z_k.x())},
-               {"pzk_y", dv(mpc_thread_state.p_z_k.y())},
-               {"in_v_n", dv(mpc_thread_state.input_v_.size())},
-               {"in_vx", dv(has_v ? mpc_thread_state.input_v_.front().linear().x() : 0.0)},
-               {"in_vy", dv(has_v ? mpc_thread_state.input_v_.front().linear().y() : 0.0)},
-               {"in_om", dv(has_v ? mpc_thread_state.input_v_.front().angular().z() : 0.0)},
-               {"T_Steps", dv(T_Steps)}});
-  }
-  // DEBUG (temporary): full dumps around the first 2 solves after every reset(). "pre_init" is the solver state
-  // exactly as it survived the reset, before init_MPC() loads this solve's inputs.
-  const int full_dump_solve_idx = full_dump_solves_since_reset_.fetch_add(1);
-  const bool full_dump_this_solve = full_dump_solve_idx >= 0 && full_dump_solve_idx < 2;
-  const std::string full_dump_solve_tag = "solve" + std::to_string(full_dump_solve_idx);
-  if(full_dump_this_solve) { fullDump(full_dump_solve_tag + "_pre_init", 2 | 4); }
   MPCSolver.init_MPC(mpc_thread_state, Tail, Steps_Desired, Steps);
-  if(full_dump_this_solve) { fullDump(full_dump_solve_tag + "_post_init", 4); }
   // MPCSolver.Puk(mpc_state_.p_u);
 
   if(Use_w)
@@ -542,34 +459,9 @@ void Walking_controller::ComputeWalkingTrajectory()
   }
 
   MPCSolver.GetWalkingParameters(mpc_thread_state.stop);
-  // DEBUG (temporary): solver state right after the solve, and once per episode after the first failed solve.
-  if(full_dump_this_solve) { fullDump(full_dump_solve_tag + "_end", 4); }
-  if(!MPCSolver.QPsucceeded() && !full_dump_fail_done_.exchange(true))
-  {
-    fullDump(full_dump_solve_tag + "_FIRST_FAIL", 2 | 4);
-  }
 
   std::chrono::duration<double, std::milli> time_span = mc_rtc::clock::now() - t_clock;
   mpc_thread_process_time = time_span.count();
-
-  // DEBUG (temporary): outcome of this solve (MPC thread). qp_ok=0 or |stab_err| > stab_thr is what sets
-  // ismpc_wants_stop below.
-  if(stateDumpWindow())
-  {
-    const auto ts_vec = MPCSolver.timesteps();
-    const auto se = MPCSolver.stability_error();
-    stateDump(this, "solve_end", count,
-              {{"tick", dv(state_dump_ticks_.load())},
-               {"qp_ok", dv(MPCSolver.QPsucceeded())},
-               {"stab_err_x", dv(se.x())},
-               {"stab_err_y", dv(se.y())},
-               {"stab_thr", dv(controller_config_.max_stability_error)},
-               {"step_recovery", dv(StepRecoveryState)},
-               {"process_ms", dv(mpc_thread_process_time)},
-               {"ts_n", dv(ts_vec.size())},
-               {"ts_front", dv(ts_vec.empty() ? 0.0 : ts_vec.front())},
-               {"ts_front_finite", dv(!ts_vec.empty() && std::isfinite(ts_vec.front()))}});
-  }
 
   if(MPCSolver.QPsucceeded())
   {
@@ -808,120 +700,10 @@ void Walking_controller::CheckStepRecovery()
   }
 }
 
-// DEBUG (temporary): CSV dump of the velocity state around reset(), to locate the stale state behind the
-// post-reset CoM-velocity spike. One file per process: /tmp/ismpc_reset_dump_<pid>.csv. `self` (the controller
-// pointer) tells controllers of the same process apart. Remove together with the call sites.
-namespace
-{
-constexpr int kDumpTicks = 6; // run() ticks dumped after every reset()
-
-void resetDumpRow(const void * self,
-                  const char * tag,
-                  int tick,
-                  int count_now,
-                  const mc_rbdyn::Robot & real,
-                  const mc_rbdyn::Robot & ctl,
-                  const Eigen::Vector3d & v_c_k,
-                  int observerResetOk,
-                  int observerRunOk)
-{
-  static std::mutex mtx;
-  static std::ofstream out;
-  std::lock_guard<std::mutex> lk(mtx);
-  if(!out.is_open())
-  {
-    out.open("/tmp/ismpc_reset_dump_" + std::to_string(::getpid()) + ".csv", std::ios::out | std::ios::trunc);
-    out << "tag,self,tick,count,"
-           "real_cv_x,real_cv_y,real_cv_z,ctl_cv_x,ctl_cv_y,ctl_cv_z,"
-           "real_base_ang_norm,real_base_lin_x,real_base_lin_y,real_base_lin_z,real_joint_alpha_norm,"
-           "ctl_base_ang_norm,ctl_base_lin_x,ctl_base_lin_y,ctl_base_lin_z,ctl_joint_alpha_norm,"
-           "real_pos_x,real_pos_y,real_pos_z,real_com_x,real_com_y,real_com_z,"
-           "mpc_vck_x,mpc_vck_y,mpc_vck_z,obs_reset_ok,obs_run_ok,ctl_pos_x,ctl_pos_y,ctl_pos_z\n";
-  }
-  // alpha layout assumed: alpha[0] = floating base (size 6: angular, linear), alpha[1..] = joints.
-  auto alphaParts = [](const mc_rbdyn::Robot & r, double & angNorm, Eigen::Vector3d & lin, double & jointNorm)
-  {
-    angNorm = 0;
-    lin.setZero();
-    jointNorm = 0;
-    const auto & alpha = r.mbc().alpha;
-    if(alpha.empty()) { return; }
-    if(alpha[0].size() == 6)
-    {
-      angNorm = Eigen::Vector3d(alpha[0][0], alpha[0][1], alpha[0][2]).norm();
-      lin = Eigen::Vector3d(alpha[0][3], alpha[0][4], alpha[0][5]);
-    }
-    double s = 0;
-    for(size_t i = 1; i < alpha.size(); ++i)
-    {
-      for(double a : alpha[i]) { s += a * a; }
-    }
-    jointNorm = std::sqrt(s);
-  };
-  double rAng, rJoint, cAng, cJoint;
-  Eigen::Vector3d rLin, cLin;
-  alphaParts(real, rAng, rLin, rJoint);
-  alphaParts(ctl, cAng, cLin, cJoint);
-  const Eigen::Vector3d rcv = real.comVelocity();
-  const Eigen::Vector3d ccv = ctl.comVelocity();
-  const Eigen::Vector3d rp = real.posW().translation();
-  const Eigen::Vector3d rc = real.com();
-  const Eigen::Vector3d cp = ctl.posW().translation();
-  out << tag << ',' << self << ',' << tick << ',' << count_now << ',' << rcv.x() << ',' << rcv.y() << ',' << rcv.z()
-      << ',' << ccv.x() << ',' << ccv.y() << ',' << ccv.z() << ',' << rAng << ',' << rLin.x() << ',' << rLin.y() << ','
-      << rLin.z() << ',' << rJoint << ',' << cAng << ',' << cLin.x() << ',' << cLin.y() << ',' << cLin.z() << ','
-      << cJoint << ',' << rp.x() << ',' << rp.y() << ',' << rp.z() << ',' << rc.x() << ',' << rc.y() << ',' << rc.z()
-      << ',' << v_c_k.x() << ',' << v_c_k.y() << ',' << v_c_k.z() << ',' << observerResetOk << ',' << observerRunOk
-      << ',' << cp.x() << ',' << cp.y() << ',' << cp.z() << '\n';
-  out.flush();
-}
-} // namespace
-
 bool Walking_controller::run()
 {
   JoystickInputs();
   policy_->tick(); // before wait_for_mpc_thread(): counts every controller step
-
-  // DEBUG (temporary): dump the first kDumpTicks ticks after every reset(). Observers have already run for this
-  // tick when run() is entered, so these are the values the datastore getter returns after this tick.
-  if(dump_ticks_since_reset_ >= 0 && dump_ticks_since_reset_ < kDumpTicks)
-  {
-    resetDumpRow(this, "run", dump_ticks_since_reset_, count, realRobot(), robot(), mpc_state_.v_c_k, -1, -1);
-    if(dump_ticks_since_reset_ < 3) { fullDump("run_tick" + std::to_string(dump_ticks_since_reset_), 1); }
-    ++dump_ticks_since_reset_;
-  }
-  // DEBUG (temporary): slow-estimator snapshot every 20 controller ticks for the first 600 ticks after a reset.
-  if(count % 20 == 0 && count <= 600) { estimatorDump("t"); }
-
-  // DEBUG (temporary): per-tick controller state for kStateDumpTicks ticks after every reset(), see stateDump().
-  if(stateDumpWindow())
-  {
-    const int k = state_dump_ticks_.load();
-    if(stateDumpThin())
-    {
-      stateDump(this, "run", count,
-                {{"tick", dv(k)},
-                 {"active", dv(active)},
-                 {"Stop", dv(Stop)},
-                 {"Robot_Walking", dv(Robot_Walking)},
-                 {"policy_walk", dv(policyWantsWalk)},
-                 {"dbl_support", dv(doubleSupport_state)},
-                 {"mpc_thread_on", dv(MPC_thread_on.load())},
-                 {"mpc_thread_ready", dv(MPC_thread_ready.load())},
-                 {"mpc_computing", dv(WalkingTrajectory_Computing.load())},
-                 {"new_thread_state", dv(NewThreadState.load())},
-                 {"X_MPC_n", dv(mpc_state_.X_MPC.size())},
-                 {"Index", dv(mpc_state_.Index)},
-                 {"QPSuccess", dv(mpc_state_.QPSuccess)},
-                 {"wants_stop", dv(ismpcWantsStop())},
-                 {"stab_state", dv(static_cast<int>(stabilizer_state_))},
-                 {"ref_vx", dv(reference_velocity.x())},
-                 {"ref_vy", dv(reference_velocity.y())},
-                 {"ref_om", dv(reference_velocity.z())},
-                 {"T_Steps", dv(T_Steps)}});
-    }
-    state_dump_ticks_.store(k + 1);
-  }
 
   // Periodic drain of the Logger's key add/remove journal (about once per second of controller time).
   // Same condition and reasoning as the drain at the end of reset(): with no log file open (training) nothing else
@@ -1074,18 +856,6 @@ void Walking_controller::MoveCoM()
 
   if(mpc_state_.Index + 1 >= mpc_state_.X_MPC.size())
   {
-    // DEBUG (temporary): the horizon-reached branch was taken (see stateDump()).
-    if(stateDumpThin())
-    {
-      stateDump(this, "movecom_horizon", count,
-                {{"tick", dv(state_dump_ticks_.load())},
-                 {"Robot_Walking", dv(Robot_Walking)},
-                 {"active", dv(active)},
-                 {"Index", dv(mpc_state_.Index)},
-                 {"X_MPC_n", dv(mpc_state_.X_MPC.size())},
-                 {"QPSuccess", dv(mpc_state_.QPSuccess)},
-                 {"mpc_thread_ready", dv(MPC_thread_ready.load())}});
-    }
 
     if(!Robot_Walking)
     {
@@ -1093,23 +863,10 @@ void Walking_controller::MoveCoM()
       {
         mc_rtc::log::error("Control Horizon reached while standing, stop triggered");
         deactivate();
-        fullDump("movecom_deactivate", 1);
-        // DEBUG (temporary): deactivate() ran; active_after is false when it took effect.
-        stateDump(this, "movecom_deactivate_called", count,
-                  {{"tick", dv(state_dump_ticks_.load())},
-                   {"active_after", dv(active)},
-                   {"Robot_Walking", dv(Robot_Walking)},
-                   {"X_MPC_n", dv(mpc_state_.X_MPC.size())}});
       }
     }
     else
     {
-      fullDump("movecom_throw", 1);
-      // DEBUG (temporary): about to throw (worker-failed path).
-      stateDump(this, "movecom_throw", count,
-                {{"tick", dv(state_dump_ticks_.load())},
-                 {"Index", dv(mpc_state_.Index)},
-                 {"X_MPC_n", dv(mpc_state_.X_MPC.size())}});
       mc_rtc::log::error_and_throw<std::runtime_error>("[FATAL] Control Horizon reached while walking");
     }
   }
@@ -1434,152 +1191,6 @@ void Walking_controller::UpdateInitialVectors()
   }
 }
 
-// DEBUG (temporary): slow estimator / disturbance state, controller thread only (stabTask and mpc_state_ are
-// not touched by the MPC thread; w_/kappa_ are only read there).
-void Walking_controller::estimatorDump(const std::string & tag)
-{
-  try
-  {
-    using ismpc_dump::flat;
-    ismpc_dump::Section s("est:" + tag, count, this);
-    const bool withBias = controller_config_.stab_config.dcmBias.withDCMBias;
-    const bool withFilter = controller_config_.stab_config.dcmBias.withDCMFilter;
-    s.line("[est] withDCMBias={} withDCMFilter={} Use_w={} UseRealRobot={} debugMode={}", withBias, withFilter, Use_w,
-           UseRealRobot, debugMode);
-    s.line("[est] stab_biasDCM=({}) ComBias=({})", withBias ? flat(stabTask->biasDCM()) : std::string("disabled"),
-           flat(mpc_state_.ComBias));
-    s.line("[est] w_=({}) kappa_={} w_inf_=({}) kappa_inf_={}", flat(w_), kappa_, flat(w_inf_), kappa_inf_);
-    s.line("[est] realRobot comVelocity=({}) velW lin=({}) ang=({}) robot com=({})", flat(realRobot().comVelocity()),
-           flat(realRobot().velW().linear()), flat(realRobot().velW().angular()), flat(robot().com()));
-  }
-  catch(const std::exception & e)
-  {
-    ismpc_dump::Section s("dump_error:est_" + tag, -1);
-    s.line("exception: {}", e.what());
-  }
-}
-
-// DEBUG (temporary): brute-force full-state dump, see FullDump.h. Everything is wrapped in try/catch so a throwing
-// accessor can never take the controller down; the failure is written into the dump instead.
-void Walking_controller::fullDump(const std::string & tag, int mode)
-{
-  try
-  {
-    using ismpc_dump::flat;
-    using ismpc_dump::pose;
-    using ismpc_dump::vecE;
-    using ismpc_dump::vecs;
-
-    auto dumpMpc = [&](ismpc_dump::Section & s, const char * name, const MPC_state & m)
-    {
-      s.line("[{}] p_c_k=({}) v_c_k=({}) p_z_k=({}) p_u=({}) Lck=({}) Uk=({})", name, flat(m.p_c_k), flat(m.v_c_k),
-             flat(m.p_z_k), flat(m.p_u), flat(m.Lck), flat(m.Uk));
-      s.line("[{}] Index={} QPSuccess={} stop={} t_k={} t={} tds={} t_lift={} doubleSupport={} input_mass={}", name,
-             m.Index, m.QPSuccess, m.stop, m.t_k, m.t, m.tds, m.t_lift, m.doubleSupport, m.input_mass);
-      s.line("[{}] support_foot={}", name, m.input_Support_FootName);
-      s.line("[{}] X_0_SupportFoot {}", name, pose(m.X_0_SupportFoot));
-      s.line("[{}] X_0_SwingFoot {}", name, pose(m.X_0_SwingFoot));
-      s.line("[{}] X_0_Initial_SwingFoot {}", name, pose(m.X_0_Initial_SwingFoot));
-      s.line("[{}] X_0_Step_Target {}", name, pose(m.X_0_Step_Target));
-      s.line("[{}] X_MPC {}", name, vecE(m.X_MPC));
-      s.line("[{}] Y_MPC {}", name, vecE(m.Y_MPC));
-      s.line("[{}] planned_steps_ n={} first={}", name, m.planned_steps_.size(),
-             m.planned_steps_.empty() ? std::string("-") : pose(m.planned_steps_.front()));
-      s.line("[{}] planned_timesteps_ {}", name, vecs(m.planned_timesteps_, 16));
-      s.line("[{}] input_v_ n={} input_timesteps_ n={} input_ref_pose_ n={}", name, m.input_v_.size(),
-             m.input_timesteps_.size(), m.input_ref_pose_.size());
-      s.line("[{}] admittance_ref_ {}", name, vecE(m.admittance_ref_));
-    };
-
-    if(mode & 1)
-    {
-      ismpc_dump::Section s("ctl:" + tag, count, this);
-      s.line("[flags] active={} Stop={} Robot_Walking={} policyWantsWalk={} policyControlsTs={} autoStart={} "
-             "autoStartConfigured={} emergencyFlag={} StepRecoveryState={} swing_foot_contact={} "
-             "doubleSupport_state={} velocityControl={} rlVelocityControl={} stabilizer_active_={} FeetUp={}",
-             active, Stop, Robot_Walking, policyWantsWalk, policyControlsTs, autoStart, autoStartConfigured,
-             emergencyFlag, StepRecoveryState, swing_foot_contact, doubleSupport_state, velocityControl,
-             rlVelocityControl, stabilizer_active_, FeetUp);
-      s.line("[atomics] MPC_thread_on={} MPC_thread_ready={} NewThreadState={} NewConfigState={} "
-             "WalkingTrajectory_Computing={} ismpc_wants_stop={} state_dump_ticks_={}",
-             MPC_thread_on.load(), MPC_thread_ready.load(), NewThreadState.load(), NewConfigState.load(),
-             WalkingTrajectory_Computing.load(), ismpc_wants_stop.load(), state_dump_ticks_.load());
-      s.line("[counters] count={} countStart={} count_stop={} kfoot={} Index={} N_Steps={} N_Steps_Desired={} "
-             "N_Steps_Desired_std={} dump_ticks_since_reset_={} logDrainTicks_={}",
-             count, countStart, count_stop, kfoot, Index, N_Steps, N_Steps_Desired, N_Steps_Desired_std,
-             dump_ticks_since_reset_, logDrainTicks_);
-      s.line("[times] t={} t_k={} t_lift={} t_contact={} t_stop={} T_Steps={} prevStepTiming={} input_tds={} "
-             "mpc_thread_process_time={} ControllerLoopTime={} landing_time={}",
-             t, t_k, t_lift, t_contact, t_stop, T_Steps, prevStepTiming, input_tds, mpc_thread_process_time,
-             ControllerLoopTime, landing_time);
-      s.line("[misc] LeftFootRatio={} PrevLeftFootRatio={} Ratio_target={} kappa_={} kappa_inf_={} eta2_cstr={} "
-             "comAccZ={} K_feedback={} last_applied_lambda_={} vertical_force_offset_={} SwingFootInitialAngle={}",
-             LeftFootRatio, PrevLeftFootRatio, Ratio_target, kappa_, kappa_inf_, eta2_cstr, comAccZ, K_feedback,
-             last_applied_lambda_, vertical_force_offset_, SwingFootInitialAngle);
-      s.line("[est] withDCMBias={} stab_biasDCM=({}) ComBias=({}) w_=({}) kappa_={} w_inf_=({}) kappa_inf_={} Use_w={}",
-             controller_config_.stab_config.dcmBias.withDCMBias,
-             controller_config_.stab_config.dcmBias.withDCMBias ? flat(stabTask->biasDCM()) : std::string("disabled"),
-             flat(mpc_state_.ComBias), flat(w_), kappa_, flat(w_inf_), kappa_inf_, Use_w);
-      s.line("[misc] Vx_i={} Vy_i={} Omega_i={} vRefX={} vRefY={} omegaRef={} PrevVrefX={} currentLeftLeg={} "
-             "currentRightLeg={} stabilizer_state_={}",
-             Vx_i, Vy_i, Omega_i, vRefX, vRefY, omegaRef, PrevVrefX, currentLeftLeg, currentRightLeg,
-             static_cast<int>(stabilizer_state_));
-      s.line("[misc] supportFootName={} swingFootName={} Tail={} SupportFootPose=({}) reference_velocity=({}) "
-             "obs_raw_=({})",
-             supportFootName, swingFootName, Tail, flat(SupportFootPose), flat(reference_velocity), flat(obs_raw_));
-
-      auto dumpRobot = [&](const char * name, const mc_rbdyn::Robot & r)
-      {
-        const auto & X = r.posW();
-        s.line("[{}] posW t=({}) R=({})", name, flat(X.translation()), flat(X.rotation()));
-        const auto v = r.velW();
-        s.line("[{}] velW ang=({}) lin=({})", name, flat(v.angular()), flat(v.linear()));
-        s.line("[{}] com=({}) comVelocity=({})", name, flat(r.com()), flat(r.comVelocity()));
-        std::vector<double> q;
-        std::vector<double> al;
-        for(const auto & j : r.mbc().q)
-        {
-          for(double x : j) { q.push_back(x); }
-        }
-        for(const auto & j : r.mbc().alpha)
-        {
-          for(double x : j) { al.push_back(x); }
-        }
-        s.line("[{}] q {}", name, vecs(q, q.size() + 1));
-        s.line("[{}] alpha {}", name, vecs(al, al.size() + 1));
-        s.line("[{}] surfacePose right {} left {}", name, pose(r.surfacePose(rightFootName_)),
-               pose(r.surfacePose(leftFootName_)));
-        for(const auto & fs : r.forceSensors())
-        {
-          s.line("[{}] forceSensor {} wrench=({})", name, fs.name(), flat(fs.wrench().vector()));
-        }
-        if(r.hasBodySensor("FloatingBase"))
-        {
-          const auto & bs = r.bodySensor("FloatingBase");
-          s.line("[{}] bodySensor FloatingBase orientation(xyzw)=({}) angVel=({}) linAcc=({})", name,
-                 flat(bs.orientation().coeffs()), flat(bs.angularVelocity()), flat(bs.linearAcceleration()));
-        }
-      };
-      dumpRobot("robot", robot());
-      dumpRobot("realRobot", realRobot());
-      dumpMpc(s, "mpc_state_", mpc_state_);
-    }
-
-    if(mode & 2)
-    {
-      ismpc_dump::Section s("thr:" + tag, count, this);
-      dumpMpc(s, "mpc_thread_state", mpc_thread_state);
-    }
-
-    if(mode & 4) { MPCSolver.DumpState(tag); }
-  }
-  catch(const std::exception & e)
-  {
-    ismpc_dump::Section s("dump_error:" + tag, -1);
-    s.line("exception: {}", e.what());
-  }
-}
-
 void Walking_controller::reset(const mc_control::ControllerResetData & reset_data)
 {
   // mc_rtc::log::warning(
@@ -1612,24 +1223,6 @@ void Walking_controller::reset(const mc_control::ControllerResetData & reset_dat
   // mpc_state_.DumpState("reset_enter_prevCount" + std::to_string(count) + "_mpcstate");
   // mpc_thread_state.DumpState("reset_enter_prevCount" + std::to_string(count) + "_mpcthreadstate");
 
-  // DEBUG (temporary): state exactly as inherited from the previous episode.
-  resetDumpRow(this, "reset_enter", -1, count, realRobot(), robot(), mpc_state_.v_c_k, -1, -1);
-  // DEBUG (temporary): full text dump of the state exactly as the previous episode left it.
-  fullDump("reset_enter", 1);
-  // DEBUG (temporary): controller state exactly as the previous episode left it (was it already deactivated?).
-  stateDump(this, "reset_enter_state", count,
-            {{"prev_tick", dv(state_dump_ticks_.load())},
-             {"active", dv(active)},
-             {"Stop", dv(Stop)},
-             {"Robot_Walking", dv(Robot_Walking)},
-             {"policy_walk", dv(policyWantsWalk)},
-             {"mpc_thread_on", dv(MPC_thread_on.load())},
-             {"mpc_thread_ready", dv(MPC_thread_ready.load())},
-             {"X_MPC_n", dv(mpc_state_.X_MPC.size())},
-             {"Index", dv(mpc_state_.Index)},
-             {"QPSuccess", dv(mpc_state_.QPSuccess)},
-             {"wants_stop", dv(ismpcWantsStop())}});
-
   // Stop and join the MPC thread FIRST. Everything below that resets shared state (mpc_state_,
   // mpc_thread_state, MPCSolver) used to run while the previous episode's thread could still be inside
   // ComputeWalkingTrajectory(), which then overwrote the fresh state (and the solver reset itself).
@@ -1645,9 +1238,6 @@ void Walking_controller::reset(const mc_control::ControllerResetData & reset_dat
 
   mc_control::fsm::Controller::reset(reset_data);
 
-  // DEBUG (temporary): after the base-class reset, before the observer pipelines are touched.
-  resetDumpRow(this, "reset_after_base", -1, count, realRobot(), robot(), mpc_state_.v_c_k, -1, -1);
-
   // Stale observer state across episodes (see KinematicInertialObserver / KinematicInertialPoseObserver):
   //  - KinematicInertialPoseObserver::reset() starts from pose_ = realRobot().posW(), and
   //    KinematicInertialObserver::reset() copies that pose into posWPrev_ and seeds its velocity low-pass filter with
@@ -1659,17 +1249,9 @@ void Walking_controller::reset(const mc_control::ControllerResetData & reset_dat
   // that posWPrev_ and the filter are seeded from a consistent, motionless state.
   realRobot().posW(robot().posW());
   realRobot().velW(sva::MotionVecd::Zero());
-  // DEBUG (temporary): after syncing realRobot() to robot(), before the observer pipelines are touched.
-  resetDumpRow(this, "reset_after_sync", -1, count, realRobot(), robot(), mpc_state_.v_c_k, -1, -1);
 
   bool observerResetOk = resetObserverPipelines();
-  // DEBUG (temporary): after resetObserverPipelines(), before runObserverPipelines().
-  resetDumpRow(this, "reset_after_obs_reset", -1, count, realRobot(), robot(), mpc_state_.v_c_k,
-               static_cast<int>(observerResetOk), -1);
   bool observerRunOk = runObserverPipelines();
-  // DEBUG (temporary): after runObserverPipelines(); also records both return values (otherwise unused).
-  resetDumpRow(this, "reset_after_obs_run", -1, count, realRobot(), robot(), mpc_state_.v_c_k,
-               static_cast<int>(observerResetOk), static_cast<int>(observerRunOk));
 
   stabTask->reset();
   mc_rbdyn::lipm_stabilizer::StabilizerConfiguration config_stab = controller_config_.stab_config;
@@ -1774,7 +1356,8 @@ void Walking_controller::reset(const mc_control::ControllerResetData & reset_dat
   obs_filter_ = mc_filter::LowPass<Eigen::Vector3d>(solver().dt(), obs_filter_cutoff_T_);
   obs_raw_.setZero();
 
-  // Patch 16: clear disturbance estimator state that leaked across episodes
+  // The hand-wrench disturbance filters feed w_inf_/kappa_inf_ (hence the solver) every tick and were built once
+  // in the constructor: without this a push from a previous episode keeps biasing the next ones.
   leftHandDisturbanceFilter_ = mc_filter::LowPass<sva::ForceVecd>(solver().dt(), 0);
   rightHandDisturbanceFilter_ = mc_filter::LowPass<sva::ForceVecd>(solver().dt(), 0);
   leftHandDisturbanceFilter_.cutoffPeriod(controller_config_.external_disturbance_cutoff_period_);
@@ -1879,24 +1462,6 @@ void Walking_controller::reset(const mc_control::ControllerResetData & reset_dat
   autoStart = false;
   // DEBUG (temporary): arm the post-reset settle comparison window.
   debug_ticks_since_reset_ = 0;
-
-  // DEBUG (temporary): end of reset(); arms the per-tick dump in run().
-  resetDumpRow(this, "reset_exit", -1, count, realRobot(), robot(), mpc_state_.v_c_k, -1, -1);
-  dump_ticks_since_reset_ = 0;
-  // DEBUG (temporary): MPC thread is joined here, so controller, thread-state and solver can all be read safely.
-  fullDump("reset_exit", 7);
-  full_dump_solves_since_reset_.store(0);
-  full_dump_fail_done_.store(false);
-  // DEBUG (temporary): end of reset(): active should be true here (autoStartConfigured -> activate()).
-  stateDump(this, "reset_exit_state", count,
-            {{"active", dv(active)},
-             {"Stop", dv(Stop)},
-             {"Robot_Walking", dv(Robot_Walking)},
-             {"mpc_thread_on", dv(MPC_thread_on.load())},
-             {"mpc_thread_ready", dv(MPC_thread_ready.load())},
-             {"X_MPC_n", dv(mpc_state_.X_MPC.size())},
-             {"Index", dv(mpc_state_.Index)}});
-  state_dump_ticks_.store(0);
 
   // Bound the Logger's key add/remove event journal when nothing else drains it.
   // Only Logger::log() empties it, and it only runs per tick once a log file has been opened (Logger::start/open).

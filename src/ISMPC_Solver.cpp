@@ -1,6 +1,5 @@
 #include "../include/ismpc_walking/ISMPC_Solver.h"
 #include <mc_rtc/io_utils.h>
-#include "../include/ismpc_walking/FullDump.h"
 
 ISMPC_Solver::ISMPC_Solver() {}
 
@@ -61,29 +60,6 @@ void ISMPC_Solver::ResetEpisodeState(double com_height_offset)
   InStabilityRange = false;
   m_stop = true;
 
-  // Members below are written by a solve and read by the NEXT solve before being rewritten, but were
-  // not cleared above (found by reading init_MPC/GetWalkingParameters; effect on the first-solve NaN
-  // is NOT yet proven). Restored to construction-time defaults.
-  // U_k: init_MPC() (m_tk == 0 on the first solve) copies m_admittance_targets.front() into U_k.
-  U_k.setZero();
-  m_admittance_targets.clear();
-  m_t_delay = 0;
-  m_delay_elapsed = 0;
-  m_tk_within_step = 0.0;
-  // init_MPC() builds P_u_k from m_eta[0] BEFORE the height profile is refreshed: back to nominal.
-  {
-    const double eta_nom = std::sqrt(g / CoM_height_avg);
-    std::fill(CoM_height.begin(), CoM_height.end(), CoM_height_avg);
-    std::fill(m_eta.begin(), m_eta.end(), eta_nom);
-    std::fill(m_eta_free.begin(), m_eta_free.end(), eta_nom);
-  }
-  // Sine mode: -1 is the "not initialised" sentinel (m_t_global restarts at 0 on reset).
-  m_sine_phase = 0.0;
-  m_sine_last_t_global = -1.0;
-
-  // Clear every member the feasibility solver carries between solve() calls.
-  m_feasibilitySolver.reset();
-
   // RL / disturbance inputs. These are written from outside (datastore setters, bridge) and, at the
   // first post-reset solve, still hold the PREVIOUS episode's last values (confirmed by the full dump:
   // solve0_pre_init of a frozen episode carried frequency=8, sin_amp=0.0937, cos_amp=-0.0698, which
@@ -105,8 +81,6 @@ void ISMPC_Solver::ResetEpisodeState(double com_height_offset)
 
 void ISMPC_Solver::DumpState(const std::string & tag)
 {
-  // DEBUG (temporary): written to /tmp/ismpc_full_dump_<pid>.txt (see FullDump.h) instead of the mc_rtc log.
-  ismpc_dump::Section dump_sec("solver:" + tag, -1);
   // Auto-generated-then-hand-reviewed dump of EVERY private/protected member of
   // ISMPC_Solver (170 declarations in ISMPC_Solver.h accounted for: 164 dumped below,
   // QP (Eigen::QuadProgDense, an internal solver working-object rebuilt fresh by
@@ -115,261 +89,222 @@ void ISMPC_Solver::DumpState(const std::string & tag)
   // a fresh episode (before this episode's own GetWalkingParameters() has run) and
   // diff two consecutive calls' output to directly prove (or disprove) that nothing
   // survives an episode boundary uninitialized/stale/NaN.
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] Allow_None={}", tag, Allow_None);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] DoubleSupport={}", tag, DoubleSupport);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] InStabilityRange={}", tag, InStabilityRange);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] QPsuccess={}", tag, QPsuccess);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] Slide_ZMP_region={}", tag, Slide_ZMP_region);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] Use_Stability_Task={}", tag, Use_Stability_Task);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_feas_res={}", tag, m_feas_res);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_stop={}", tag, m_stop);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] Ant_Tail_X={}", tag, Ant_Tail_X);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] Ant_Tail_Y={}", tag, Ant_Tail_Y);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] CoM_height_avg={}", tag, CoM_height_avg);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] N_integration={}", tag, N_integration);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] NextOptimalTs={}", tag, NextOptimalTs);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] g={}", tag, g);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_Beta_Lc={}", tag, m_Beta_Lc);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_Beta_dcm={}", tag, m_Beta_dcm);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_Beta_dcm_stop={}", tag, m_Beta_dcm_stop);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_Beta_dcm_vel={}", tag, m_Beta_dcm_vel);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_Beta_dcm_vel_stop={}", tag, m_Beta_dcm_vel_stop);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_Beta_stab={}", tag, m_Beta_stab);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_Beta_step={}", tag, m_Beta_step);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_Beta_zmp_traj={}", tag, m_Beta_zmp_traj);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_Beta_zmp_traj_stop={}", tag, m_Beta_zmp_traj_stop);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_Beta_zmp_vel={}", tag, m_Beta_zmp_vel);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_Dstep_ratio={}", tag, m_Dstep_ratio);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_Ld_max={}", tag, m_Ld_max);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_Tc={}", tag, m_Tc);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_Tds={}", tag, m_Tds);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_Tp={}", tag, m_Tp);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_com_z_amplitude={}", tag, m_com_z_amplitude);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_com_z_test_period={}", tag, m_com_z_test_period);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_com_z_test_t0={}", tag, m_com_z_test_t0);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_delay={}", tag, m_delay);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_delay_elapsed={}", tag, m_delay_elapsed);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_delta={}", tag, m_delta);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_delta_control={}", tag, m_delta_control);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_dx={}", tag, m_dx);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_dx_f={}", tag, m_dx_f);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_dx_f_rect={}", tag, m_dx_f_rect);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_dx_static={}", tag, m_dx_static);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_dx_u={}", tag, m_dx_u);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_dy={}", tag, m_dy);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_dy_f={}", tag, m_dy_f);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_dy_f_rect={}", tag, m_dy_f_rect);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_dy_static={}", tag, m_dy_static);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_dy_u={}", tag, m_dy_u);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_feet_distance={}", tag, m_feet_distance);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_foot_max_vel={}", tag, m_foot_max_vel);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_input_Tds={}", tag, m_input_Tds);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_kappa={}", tag, m_kappa);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_kappa_inf={}", tag, m_kappa_inf);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_lambda={}", tag, m_lambda);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_mass={}", tag, m_mass);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_riccati_dt={}", tag, m_riccati_dt);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_rl_com_z_frequency={}", tag, m_rl_com_z_frequency);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_rl_com_z_offset={}", tag, m_rl_com_z_offset);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_rl_com_z_sin_amp={}", tag, m_rl_com_z_sin_amp);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_rl_com_z_cos_amp={}", tag, m_rl_com_z_cos_amp);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_support_state={}", tag, m_support_state);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_t_delay={}", tag, m_t_delay);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_t_global={}", tag, m_t_global);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_t_lift={}", tag, m_t_lift);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_tk={}", tag, m_tk);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_tk_within_step={}", tag, m_tk_within_step);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] perturbation_duration={}", tag, perturbation_duration);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] zmp_cstr_next_stp_ratio={}", tag, zmp_cstr_next_stp_ratio);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] N_Steps={}", tag, N_Steps);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] N_Steps_Desired={}", tag, N_Steps_Desired);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] N_variable={}", tag, N_variable);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] Tds_offset={}", tag, Tds_offset);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] j_Max_C={}", tag, j_Max_C);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] j_f={}", tag, j_f);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] j_fm1={}", tag, j_fm1);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] kfoot={}", tag, kfoot);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_C={}", tag, m_C);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_D={}", tag, m_D);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_P={}", tag, m_P);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_riccati_substeps={}", tag, m_riccati_substeps);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_Tail={}", tag, m_Tail);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_Tail_save={}", tag, m_Tail_save);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_support_foot={}", tag, m_support_foot);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] X_0_support_foot.translation=({},{},{}) hasNaN={}", tag, X_0_support_foot.translation().x(), X_0_support_foot.translation().y(), X_0_support_foot.translation().z(), X_0_support_foot.translation().hasNaN() || X_0_support_foot.rotation().hasNaN());
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] X_0_swing_foot.translation=({},{},{}) hasNaN={}", tag, X_0_swing_foot.translation().x(), X_0_swing_foot.translation().y(), X_0_swing_foot.translation().z(), X_0_swing_foot.translation().hasNaN() || X_0_swing_foot.rotation().hasNaN());
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] X_0_swing_foot_initial.translation=({},{},{}) hasNaN={}", tag, X_0_swing_foot_initial.translation().x(), X_0_swing_foot_initial.translation().y(), X_0_swing_foot_initial.translation().z(), X_0_swing_foot_initial.translation().hasNaN() || X_0_swing_foot_initial.rotation().hasNaN());
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] X_0_swing_foot_target.translation=({},{},{}) hasNaN={}", tag, X_0_swing_foot_target.translation().x(), X_0_swing_foot_target.translation().y(), X_0_swing_foot_target.translation().z(), X_0_swing_foot_target.translation().hasNaN() || X_0_swing_foot_target.rotation().hasNaN());
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] Integration_Mat hasNaN={} norm={}", tag, Integration_Mat.hasNaN(), Integration_Mat.norm());
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] Integration_Vec_x hasNaN={} norm={}", tag, Integration_Vec_x.hasNaN(), Integration_Vec_x.norm());
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] Integration_Vec_y hasNaN={} norm={}", tag, Integration_Vec_y.hasNaN(), Integration_Vec_y.norm());
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] Lc_k hasNaN={} norm={}", tag, Lc_k.hasNaN(), Lc_k.norm());
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] P_c_k hasNaN={} norm={}", tag, P_c_k.hasNaN(), P_c_k.norm());
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] P_u_k hasNaN={} norm={}", tag, P_u_k.hasNaN(), P_u_k.norm());
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] P_u_k_max hasNaN={} norm={}", tag, P_u_k_max.hasNaN(), P_u_k_max.norm());
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] P_u_k_min hasNaN={} norm={}", tag, P_u_k_min.hasNaN(), P_u_k_min.norm());
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] P_z_k hasNaN={} norm={}", tag, P_z_k.hasNaN(), P_z_k.norm());
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] P_z_k_delayed hasNaN={} norm={}", tag, P_z_k_delayed.hasNaN(), P_z_k_delayed.norm());
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] R_0_support hasNaN={} norm={}", tag, R_0_support.hasNaN(), R_0_support.norm());
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] R_support_0 hasNaN={} norm={}", tag, R_support_0.hasNaN(), R_support_0.norm());
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] U_k hasNaN={} norm={}", tag, U_k.hasNaN(), U_k.norm());
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] V_c_k hasNaN={} norm={}", tag, V_c_k.hasNaN(), V_c_k.norm());
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_dynamic_matrix_A hasNaN={} norm={}", tag, m_dynamic_matrix_A.hasNaN(), m_dynamic_matrix_A.norm());
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_ref_zmp hasNaN={} norm={}", tag, m_ref_zmp.hasNaN(), m_ref_zmp.norm());
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_tds_range hasNaN={} norm={}", tag, m_tds_range.hasNaN(), m_tds_range.norm());
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_ts_range hasNaN={} norm={}", tag, m_ts_range.hasNaN(), m_ts_range.norm());
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_tss_range hasNaN={} norm={}", tag, m_tss_range.hasNaN(), m_tss_range.norm());
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] rect_pose_offset hasNaN={} norm={}", tag, rect_pose_offset.hasNaN(), rect_pose_offset.norm());
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] rect_pose_offset_static hasNaN={} norm={}", tag, rect_pose_offset_static.hasNaN(), rect_pose_offset_static.norm());
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] stab_error hasNaN={} norm={}", tag, stab_error.hasNaN(), stab_error.norm());
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] w_k hasNaN={} norm={}", tag, w_k.hasNaN(), w_k.norm());
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] w_k_inf hasNaN={} norm={}", tag, w_k_inf.hasNaN(), w_k_inf.norm());
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] zmp_ref_offset hasNaN={} norm={}", tag, zmp_ref_offset.hasNaN(), zmp_ref_offset.norm());
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] zmp_ref_offset_end_step hasNaN={} norm={}", tag, zmp_ref_offset_end_step.hasNaN(), zmp_ref_offset_end_step.norm());
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] zmp_ref_offset_start_step hasNaN={} norm={}", tag, zmp_ref_offset_start_step.hasNaN(), zmp_ref_offset_start_step.norm());
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] A_stab rows={} cols={} hasNaN={} norm={}", tag, A_stab.rows(), A_stab.cols(), A_stab.hasNaN(), (A_stab.rows() > 0 && A_stab.cols() > 0) ? A_stab.norm() : -1.0);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] A_zmp rows={} cols={} hasNaN={} norm={}", tag, A_zmp.rows(), A_zmp.cols(), A_zmp.hasNaN(), (A_zmp.rows() > 0 && A_zmp.cols() > 0) ? A_zmp.norm() : -1.0);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] Aeq rows={} cols={} hasNaN={} norm={}", tag, Aeq.rows(), Aeq.cols(), Aeq.hasNaN(), (Aeq.rows() > 0 && Aeq.cols() > 0) ? Aeq.norm() : -1.0);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] Aineq rows={} cols={} hasNaN={} norm={}", tag, Aineq.rows(), Aineq.cols(), Aineq.hasNaN(), (Aineq.rows() > 0 && Aineq.cols() > 0) ? Aineq.norm() : -1.0);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] Aineq_Ld rows={} cols={} hasNaN={} norm={}", tag, Aineq_Ld.rows(), Aineq_Ld.cols(), Aineq_Ld.hasNaN(), (Aineq_Ld.rows() > 0 && Aineq_Ld.cols() > 0) ? Aineq_Ld.norm() : -1.0);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] Aineq_steps rows={} cols={} hasNaN={} norm={}", tag, Aineq_steps.rows(), Aineq_steps.cols(), Aineq_steps.hasNaN(), (Aineq_steps.rows() > 0 && Aineq_steps.cols() > 0) ? Aineq_steps.norm() : -1.0);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] Aineq_zmp rows={} cols={} hasNaN={} norm={}", tag, Aineq_zmp.rows(), Aineq_zmp.cols(), Aineq_zmp.hasNaN(), (Aineq_zmp.rows() > 0 && Aineq_zmp.cols() > 0) ? Aineq_zmp.norm() : -1.0);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] C rows={} cols={} hasNaN={} norm={}", tag, C.rows(), C.cols(), C.hasNaN(), (C.rows() > 0 && C.cols() > 0) ? C.norm() : -1.0);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] M_zmp_traj rows={} cols={} hasNaN={} norm={}", tag, M_zmp_traj.rows(), M_zmp_traj.cols(), M_zmp_traj.hasNaN(), (M_zmp_traj.rows() > 0 && M_zmp_traj.cols() > 0) ? M_zmp_traj.norm() : -1.0);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_G rows={} cols={} hasNaN={} norm={}", tag, m_G.rows(), m_G.cols(), m_G.hasNaN(), (m_G.rows() > 0 && m_G.cols() > 0) ? m_G.norm() : -1.0);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_Q rows={} cols={} hasNaN={} norm={}", tag, m_Q.rows(), m_Q.cols(), m_Q.hasNaN(), (m_Q.rows() > 0 && m_Q.cols() > 0) ? m_Q.norm() : -1.0);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_dynamic_matrix_B rows={} cols={} hasNaN={} norm={}", tag, m_dynamic_matrix_B.rows(), m_dynamic_matrix_B.cols(), m_dynamic_matrix_B.hasNaN(), (m_dynamic_matrix_B.rows() > 0 && m_dynamic_matrix_B.cols() > 0) ? m_dynamic_matrix_B.norm() : -1.0);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] AfterTc_ZMP_trajectory size={} hasNaN={} norm={}", tag, AfterTc_ZMP_trajectory.size(), AfterTc_ZMP_trajectory.hasNaN(), AfterTc_ZMP_trajectory.size() > 0 ? AfterTc_ZMP_trajectory.norm() : -1.0);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] AfterTc_ZMP_velocity size={} hasNaN={} norm={}", tag, AfterTc_ZMP_velocity.size(), AfterTc_ZMP_velocity.hasNaN(), AfterTc_ZMP_velocity.size() > 0 ? AfterTc_ZMP_velocity.norm() : -1.0);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] Pzk_Offset size={} hasNaN={} norm={}", tag, Pzk_Offset.size(), Pzk_Offset.hasNaN(), Pzk_Offset.size() > 0 ? Pzk_Offset.norm() : -1.0);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] QP_Output size={} hasNaN={} norm={}", tag, QP_Output.size(), QP_Output.hasNaN(), QP_Output.size() > 0 ? QP_Output.norm() : -1.0);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] b_stab size={} hasNaN={} norm={}", tag, b_stab.size(), b_stab.hasNaN(), b_stab.size() > 0 ? b_stab.norm() : -1.0);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] b_zmp_traj size={} hasNaN={} norm={}", tag, b_zmp_traj.size(), b_zmp_traj.hasNaN(), b_zmp_traj.size() > 0 ? b_zmp_traj.norm() : -1.0);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] beq size={} hasNaN={} norm={}", tag, beq.size(), beq.hasNaN(), beq.size() > 0 ? beq.norm() : -1.0);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] bineq size={} hasNaN={} norm={}", tag, bineq.size(), bineq.hasNaN(), bineq.size() > 0 ? bineq.norm() : -1.0);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] bineq_Ld size={} hasNaN={} norm={}", tag, bineq_Ld.size(), bineq_Ld.hasNaN(), bineq_Ld.size() > 0 ? bineq_Ld.norm() : -1.0);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] bineq_steps size={} hasNaN={} norm={}", tag, bineq_steps.size(), bineq_steps.hasNaN(), bineq_steps.size() > 0 ? bineq_steps.norm() : -1.0);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] bineq_zmp size={} hasNaN={} norm={}", tag, bineq_zmp.size(), bineq_zmp.hasNaN(), bineq_zmp.size() > 0 ? bineq_zmp.norm() : -1.0);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_Ldot_c size={} hasNaN={} norm={}", tag, m_Ldot_c.size(), m_Ldot_c.hasNaN(), m_Ldot_c.size() > 0 ? m_Ldot_c.norm() : -1.0);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_QP_dcm size={} hasNaN={} norm={}", tag, m_QP_dcm.size(), m_QP_dcm.hasNaN(), m_QP_dcm.size() > 0 ? m_QP_dcm.norm() : -1.0);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_QP_zmp size={} hasNaN={} norm={}", tag, m_QP_zmp.size(), m_QP_zmp.hasNaN(), m_QP_zmp.size() > 0 ? m_QP_zmp.norm() : -1.0);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_ZMP_u size={} hasNaN={} norm={}", tag, m_ZMP_u.size(), m_ZMP_u.hasNaN(), m_ZMP_u.size() > 0 ? m_ZMP_u.norm() : -1.0);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_p size={} hasNaN={} norm={}", tag, m_p.size(), m_p.hasNaN(), m_p.size() > 0 ? m_p.norm() : -1.0);
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] dcm_ref_traj size={}", tag, dcm_ref_traj.size());
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] SuppPolyCorners size={}", tag, SuppPolyCorners.size());
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] ZMP_max_ref_traj size={}", tag, ZMP_max_ref_traj.size());
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] ZMP_min_ref_traj size={}", tag, ZMP_min_ref_traj.size());
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_X_MPC size={}", tag, m_X_MPC.size());
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_Y_MPC size={}", tag, m_Y_MPC.size());
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_admittance_targets size={}", tag, m_admittance_targets.size());
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] m_feasibility_region size={}", tag, m_feasibility_region.size());
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] zmp_cstr_polygons size={}", tag, zmp_cstr_polygons.size());
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] Allow_None={}", tag, Allow_None);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] DoubleSupport={}", tag, DoubleSupport);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] InStabilityRange={}", tag, InStabilityRange);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] QPsuccess={}", tag, QPsuccess);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] Slide_ZMP_region={}", tag, Slide_ZMP_region);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] Use_Stability_Task={}", tag, Use_Stability_Task);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_feas_res={}", tag, m_feas_res);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_stop={}", tag, m_stop);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] Ant_Tail_X={}", tag, Ant_Tail_X);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] Ant_Tail_Y={}", tag, Ant_Tail_Y);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] CoM_height_avg={}", tag, CoM_height_avg);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] N_integration={}", tag, N_integration);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] NextOptimalTs={}", tag, NextOptimalTs);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] g={}", tag, g);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_Beta_Lc={}", tag, m_Beta_Lc);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_Beta_dcm={}", tag, m_Beta_dcm);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_Beta_dcm_stop={}", tag, m_Beta_dcm_stop);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_Beta_dcm_vel={}", tag, m_Beta_dcm_vel);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_Beta_dcm_vel_stop={}", tag, m_Beta_dcm_vel_stop);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_Beta_stab={}", tag, m_Beta_stab);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_Beta_step={}", tag, m_Beta_step);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_Beta_zmp_traj={}", tag, m_Beta_zmp_traj);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_Beta_zmp_traj_stop={}", tag, m_Beta_zmp_traj_stop);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_Beta_zmp_vel={}", tag, m_Beta_zmp_vel);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_Dstep_ratio={}", tag, m_Dstep_ratio);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_Ld_max={}", tag, m_Ld_max);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_Tc={}", tag, m_Tc);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_Tds={}", tag, m_Tds);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_Tp={}", tag, m_Tp);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_com_z_amplitude={}", tag, m_com_z_amplitude);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_com_z_test_period={}", tag, m_com_z_test_period);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_com_z_test_t0={}", tag, m_com_z_test_t0);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_delay={}", tag, m_delay);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_delay_elapsed={}", tag, m_delay_elapsed);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_delta={}", tag, m_delta);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_delta_control={}", tag, m_delta_control);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_dx={}", tag, m_dx);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_dx_f={}", tag, m_dx_f);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_dx_f_rect={}", tag, m_dx_f_rect);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_dx_static={}", tag, m_dx_static);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_dx_u={}", tag, m_dx_u);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_dy={}", tag, m_dy);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_dy_f={}", tag, m_dy_f);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_dy_f_rect={}", tag, m_dy_f_rect);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_dy_static={}", tag, m_dy_static);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_dy_u={}", tag, m_dy_u);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_feet_distance={}", tag, m_feet_distance);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_foot_max_vel={}", tag, m_foot_max_vel);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_input_Tds={}", tag, m_input_Tds);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_kappa={}", tag, m_kappa);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_kappa_inf={}", tag, m_kappa_inf);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_lambda={}", tag, m_lambda);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_mass={}", tag, m_mass);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_riccati_dt={}", tag, m_riccati_dt);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_rl_com_z_frequency={}", tag, m_rl_com_z_frequency);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_rl_com_z_offset={}", tag, m_rl_com_z_offset);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_rl_com_z_sin_amp={}", tag, m_rl_com_z_sin_amp);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_rl_com_z_cos_amp={}", tag, m_rl_com_z_cos_amp);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_support_state={}", tag, m_support_state);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_t_delay={}", tag, m_t_delay);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_t_global={}", tag, m_t_global);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_t_lift={}", tag, m_t_lift);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_tk={}", tag, m_tk);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_tk_within_step={}", tag, m_tk_within_step);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] perturbation_duration={}", tag, perturbation_duration);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] zmp_cstr_next_stp_ratio={}", tag, zmp_cstr_next_stp_ratio);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] N_Steps={}", tag, N_Steps);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] N_Steps_Desired={}", tag, N_Steps_Desired);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] N_variable={}", tag, N_variable);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] Tds_offset={}", tag, Tds_offset);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] j_Max_C={}", tag, j_Max_C);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] j_f={}", tag, j_f);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] j_fm1={}", tag, j_fm1);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] kfoot={}", tag, kfoot);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_C={}", tag, m_C);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_D={}", tag, m_D);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_P={}", tag, m_P);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_riccati_substeps={}", tag, m_riccati_substeps);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_Tail={}", tag, m_Tail);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_Tail_save={}", tag, m_Tail_save);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_support_foot={}", tag, m_support_foot);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] X_0_support_foot.translation=({},{},{}) hasNaN={}", tag, X_0_support_foot.translation().x(), X_0_support_foot.translation().y(), X_0_support_foot.translation().z(), X_0_support_foot.translation().hasNaN() || X_0_support_foot.rotation().hasNaN());
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] X_0_swing_foot.translation=({},{},{}) hasNaN={}", tag, X_0_swing_foot.translation().x(), X_0_swing_foot.translation().y(), X_0_swing_foot.translation().z(), X_0_swing_foot.translation().hasNaN() || X_0_swing_foot.rotation().hasNaN());
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] X_0_swing_foot_initial.translation=({},{},{}) hasNaN={}", tag, X_0_swing_foot_initial.translation().x(), X_0_swing_foot_initial.translation().y(), X_0_swing_foot_initial.translation().z(), X_0_swing_foot_initial.translation().hasNaN() || X_0_swing_foot_initial.rotation().hasNaN());
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] X_0_swing_foot_target.translation=({},{},{}) hasNaN={}", tag, X_0_swing_foot_target.translation().x(), X_0_swing_foot_target.translation().y(), X_0_swing_foot_target.translation().z(), X_0_swing_foot_target.translation().hasNaN() || X_0_swing_foot_target.rotation().hasNaN());
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] Integration_Mat hasNaN={} norm={}", tag, Integration_Mat.hasNaN(), Integration_Mat.norm());
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] Integration_Vec_x hasNaN={} norm={}", tag, Integration_Vec_x.hasNaN(), Integration_Vec_x.norm());
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] Integration_Vec_y hasNaN={} norm={}", tag, Integration_Vec_y.hasNaN(), Integration_Vec_y.norm());
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] Lc_k hasNaN={} norm={}", tag, Lc_k.hasNaN(), Lc_k.norm());
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] P_c_k hasNaN={} norm={}", tag, P_c_k.hasNaN(), P_c_k.norm());
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] P_u_k hasNaN={} norm={}", tag, P_u_k.hasNaN(), P_u_k.norm());
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] P_u_k_max hasNaN={} norm={}", tag, P_u_k_max.hasNaN(), P_u_k_max.norm());
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] P_u_k_min hasNaN={} norm={}", tag, P_u_k_min.hasNaN(), P_u_k_min.norm());
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] P_z_k hasNaN={} norm={}", tag, P_z_k.hasNaN(), P_z_k.norm());
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] P_z_k_delayed hasNaN={} norm={}", tag, P_z_k_delayed.hasNaN(), P_z_k_delayed.norm());
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] R_0_support hasNaN={} norm={}", tag, R_0_support.hasNaN(), R_0_support.norm());
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] R_support_0 hasNaN={} norm={}", tag, R_support_0.hasNaN(), R_support_0.norm());
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] U_k hasNaN={} norm={}", tag, U_k.hasNaN(), U_k.norm());
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] V_c_k hasNaN={} norm={}", tag, V_c_k.hasNaN(), V_c_k.norm());
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_dynamic_matrix_A hasNaN={} norm={}", tag, m_dynamic_matrix_A.hasNaN(), m_dynamic_matrix_A.norm());
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_ref_zmp hasNaN={} norm={}", tag, m_ref_zmp.hasNaN(), m_ref_zmp.norm());
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_tds_range hasNaN={} norm={}", tag, m_tds_range.hasNaN(), m_tds_range.norm());
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_ts_range hasNaN={} norm={}", tag, m_ts_range.hasNaN(), m_ts_range.norm());
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_tss_range hasNaN={} norm={}", tag, m_tss_range.hasNaN(), m_tss_range.norm());
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] rect_pose_offset hasNaN={} norm={}", tag, rect_pose_offset.hasNaN(), rect_pose_offset.norm());
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] rect_pose_offset_static hasNaN={} norm={}", tag, rect_pose_offset_static.hasNaN(), rect_pose_offset_static.norm());
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] stab_error hasNaN={} norm={}", tag, stab_error.hasNaN(), stab_error.norm());
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] w_k hasNaN={} norm={}", tag, w_k.hasNaN(), w_k.norm());
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] w_k_inf hasNaN={} norm={}", tag, w_k_inf.hasNaN(), w_k_inf.norm());
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] zmp_ref_offset hasNaN={} norm={}", tag, zmp_ref_offset.hasNaN(), zmp_ref_offset.norm());
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] zmp_ref_offset_end_step hasNaN={} norm={}", tag, zmp_ref_offset_end_step.hasNaN(), zmp_ref_offset_end_step.norm());
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] zmp_ref_offset_start_step hasNaN={} norm={}", tag, zmp_ref_offset_start_step.hasNaN(), zmp_ref_offset_start_step.norm());
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] A_stab rows={} cols={} hasNaN={} norm={}", tag, A_stab.rows(), A_stab.cols(), A_stab.hasNaN(), (A_stab.rows() > 0 && A_stab.cols() > 0) ? A_stab.norm() : -1.0);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] A_zmp rows={} cols={} hasNaN={} norm={}", tag, A_zmp.rows(), A_zmp.cols(), A_zmp.hasNaN(), (A_zmp.rows() > 0 && A_zmp.cols() > 0) ? A_zmp.norm() : -1.0);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] Aeq rows={} cols={} hasNaN={} norm={}", tag, Aeq.rows(), Aeq.cols(), Aeq.hasNaN(), (Aeq.rows() > 0 && Aeq.cols() > 0) ? Aeq.norm() : -1.0);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] Aineq rows={} cols={} hasNaN={} norm={}", tag, Aineq.rows(), Aineq.cols(), Aineq.hasNaN(), (Aineq.rows() > 0 && Aineq.cols() > 0) ? Aineq.norm() : -1.0);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] Aineq_Ld rows={} cols={} hasNaN={} norm={}", tag, Aineq_Ld.rows(), Aineq_Ld.cols(), Aineq_Ld.hasNaN(), (Aineq_Ld.rows() > 0 && Aineq_Ld.cols() > 0) ? Aineq_Ld.norm() : -1.0);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] Aineq_steps rows={} cols={} hasNaN={} norm={}", tag, Aineq_steps.rows(), Aineq_steps.cols(), Aineq_steps.hasNaN(), (Aineq_steps.rows() > 0 && Aineq_steps.cols() > 0) ? Aineq_steps.norm() : -1.0);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] Aineq_zmp rows={} cols={} hasNaN={} norm={}", tag, Aineq_zmp.rows(), Aineq_zmp.cols(), Aineq_zmp.hasNaN(), (Aineq_zmp.rows() > 0 && Aineq_zmp.cols() > 0) ? Aineq_zmp.norm() : -1.0);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] C rows={} cols={} hasNaN={} norm={}", tag, C.rows(), C.cols(), C.hasNaN(), (C.rows() > 0 && C.cols() > 0) ? C.norm() : -1.0);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] M_zmp_traj rows={} cols={} hasNaN={} norm={}", tag, M_zmp_traj.rows(), M_zmp_traj.cols(), M_zmp_traj.hasNaN(), (M_zmp_traj.rows() > 0 && M_zmp_traj.cols() > 0) ? M_zmp_traj.norm() : -1.0);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_G rows={} cols={} hasNaN={} norm={}", tag, m_G.rows(), m_G.cols(), m_G.hasNaN(), (m_G.rows() > 0 && m_G.cols() > 0) ? m_G.norm() : -1.0);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_Q rows={} cols={} hasNaN={} norm={}", tag, m_Q.rows(), m_Q.cols(), m_Q.hasNaN(), (m_Q.rows() > 0 && m_Q.cols() > 0) ? m_Q.norm() : -1.0);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_dynamic_matrix_B rows={} cols={} hasNaN={} norm={}", tag, m_dynamic_matrix_B.rows(), m_dynamic_matrix_B.cols(), m_dynamic_matrix_B.hasNaN(), (m_dynamic_matrix_B.rows() > 0 && m_dynamic_matrix_B.cols() > 0) ? m_dynamic_matrix_B.norm() : -1.0);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] AfterTc_ZMP_trajectory size={} hasNaN={} norm={}", tag, AfterTc_ZMP_trajectory.size(), AfterTc_ZMP_trajectory.hasNaN(), AfterTc_ZMP_trajectory.size() > 0 ? AfterTc_ZMP_trajectory.norm() : -1.0);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] AfterTc_ZMP_velocity size={} hasNaN={} norm={}", tag, AfterTc_ZMP_velocity.size(), AfterTc_ZMP_velocity.hasNaN(), AfterTc_ZMP_velocity.size() > 0 ? AfterTc_ZMP_velocity.norm() : -1.0);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] Pzk_Offset size={} hasNaN={} norm={}", tag, Pzk_Offset.size(), Pzk_Offset.hasNaN(), Pzk_Offset.size() > 0 ? Pzk_Offset.norm() : -1.0);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] QP_Output size={} hasNaN={} norm={}", tag, QP_Output.size(), QP_Output.hasNaN(), QP_Output.size() > 0 ? QP_Output.norm() : -1.0);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] b_stab size={} hasNaN={} norm={}", tag, b_stab.size(), b_stab.hasNaN(), b_stab.size() > 0 ? b_stab.norm() : -1.0);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] b_zmp_traj size={} hasNaN={} norm={}", tag, b_zmp_traj.size(), b_zmp_traj.hasNaN(), b_zmp_traj.size() > 0 ? b_zmp_traj.norm() : -1.0);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] beq size={} hasNaN={} norm={}", tag, beq.size(), beq.hasNaN(), beq.size() > 0 ? beq.norm() : -1.0);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] bineq size={} hasNaN={} norm={}", tag, bineq.size(), bineq.hasNaN(), bineq.size() > 0 ? bineq.norm() : -1.0);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] bineq_Ld size={} hasNaN={} norm={}", tag, bineq_Ld.size(), bineq_Ld.hasNaN(), bineq_Ld.size() > 0 ? bineq_Ld.norm() : -1.0);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] bineq_steps size={} hasNaN={} norm={}", tag, bineq_steps.size(), bineq_steps.hasNaN(), bineq_steps.size() > 0 ? bineq_steps.norm() : -1.0);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] bineq_zmp size={} hasNaN={} norm={}", tag, bineq_zmp.size(), bineq_zmp.hasNaN(), bineq_zmp.size() > 0 ? bineq_zmp.norm() : -1.0);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_Ldot_c size={} hasNaN={} norm={}", tag, m_Ldot_c.size(), m_Ldot_c.hasNaN(), m_Ldot_c.size() > 0 ? m_Ldot_c.norm() : -1.0);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_QP_dcm size={} hasNaN={} norm={}", tag, m_QP_dcm.size(), m_QP_dcm.hasNaN(), m_QP_dcm.size() > 0 ? m_QP_dcm.norm() : -1.0);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_QP_zmp size={} hasNaN={} norm={}", tag, m_QP_zmp.size(), m_QP_zmp.hasNaN(), m_QP_zmp.size() > 0 ? m_QP_zmp.norm() : -1.0);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_ZMP_u size={} hasNaN={} norm={}", tag, m_ZMP_u.size(), m_ZMP_u.hasNaN(), m_ZMP_u.size() > 0 ? m_ZMP_u.norm() : -1.0);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_p size={} hasNaN={} norm={}", tag, m_p.size(), m_p.hasNaN(), m_p.size() > 0 ? m_p.norm() : -1.0);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] dcm_ref_traj size={}", tag, dcm_ref_traj.size());
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] SuppPolyCorners size={}", tag, SuppPolyCorners.size());
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] ZMP_max_ref_traj size={}", tag, ZMP_max_ref_traj.size());
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] ZMP_min_ref_traj size={}", tag, ZMP_min_ref_traj.size());
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_X_MPC size={}", tag, m_X_MPC.size());
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_Y_MPC size={}", tag, m_Y_MPC.size());
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_admittance_targets size={}", tag, m_admittance_targets.size());
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_feasibility_region size={}", tag, m_feasibility_region.size());
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] zmp_cstr_polygons size={}", tag, zmp_cstr_polygons.size());
   {
     bool any_nan = false;
     for(double v : CoM_height) { if(std::isnan(v)) { any_nan = true; break; } }
-    dump_sec.line("[ISMPC_Solver][DumpState][{}] CoM_height size={} any_nan={} front={} back={}", tag, CoM_height.size(), any_nan, CoM_height.empty() ? 0.0 : CoM_height.front(), CoM_height.empty() ? 0.0 : CoM_height.back());
+    mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] CoM_height size={} any_nan={} front={} back={}", tag, CoM_height.size(), any_nan, CoM_height.empty() ? 0.0 : CoM_height.front(), CoM_height.empty() ? 0.0 : CoM_height.back());
   }
   {
     bool any_nan = false;
     for(double v : CoM_height_acc) { if(std::isnan(v)) { any_nan = true; break; } }
-    dump_sec.line("[ISMPC_Solver][DumpState][{}] CoM_height_acc size={} any_nan={} front={} back={}", tag, CoM_height_acc.size(), any_nan, CoM_height_acc.empty() ? 0.0 : CoM_height_acc.front(), CoM_height_acc.empty() ? 0.0 : CoM_height_acc.back());
+    mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] CoM_height_acc size={} any_nan={} front={} back={}", tag, CoM_height_acc.size(), any_nan, CoM_height_acc.empty() ? 0.0 : CoM_height_acc.front(), CoM_height_acc.empty() ? 0.0 : CoM_height_acc.back());
   }
   {
     bool any_nan = false;
     for(double v : CoM_height_vel) { if(std::isnan(v)) { any_nan = true; break; } }
-    dump_sec.line("[ISMPC_Solver][DumpState][{}] CoM_height_vel size={} any_nan={} front={} back={}", tag, CoM_height_vel.size(), any_nan, CoM_height_vel.empty() ? 0.0 : CoM_height_vel.front(), CoM_height_vel.empty() ? 0.0 : CoM_height_vel.back());
+    mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] CoM_height_vel size={} any_nan={} front={} back={}", tag, CoM_height_vel.size(), any_nan, CoM_height_vel.empty() ? 0.0 : CoM_height_vel.front(), CoM_height_vel.empty() ? 0.0 : CoM_height_vel.back());
   }
   {
     bool any_nan = false;
     for(double v : ZMP_ref_traj) { if(std::isnan(v)) { any_nan = true; break; } }
-    dump_sec.line("[ISMPC_Solver][DumpState][{}] ZMP_ref_traj size={} any_nan={} front={} back={}", tag, ZMP_ref_traj.size(), any_nan, ZMP_ref_traj.empty() ? 0.0 : ZMP_ref_traj.front(), ZMP_ref_traj.empty() ? 0.0 : ZMP_ref_traj.back());
+    mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] ZMP_ref_traj size={} any_nan={} front={} back={}", tag, ZMP_ref_traj.size(), any_nan, ZMP_ref_traj.empty() ? 0.0 : ZMP_ref_traj.front(), ZMP_ref_traj.empty() ? 0.0 : ZMP_ref_traj.back());
   }
   {
     bool any_nan = false;
     for(double v : m_B_cum) { if(std::isnan(v)) { any_nan = true; break; } }
-    dump_sec.line("[ISMPC_Solver][DumpState][{}] m_B_cum size={} any_nan={} front={} back={}", tag, m_B_cum.size(), any_nan, m_B_cum.empty() ? 0.0 : m_B_cum.front(), m_B_cum.empty() ? 0.0 : m_B_cum.back());
+    mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_B_cum size={} any_nan={} front={} back={}", tag, m_B_cum.size(), any_nan, m_B_cum.empty() ? 0.0 : m_B_cum.front(), m_B_cum.empty() ? 0.0 : m_B_cum.back());
   }
   {
     bool any_nan = false;
     for(double v : m_G_kernel) { if(std::isnan(v)) { any_nan = true; break; } }
-    dump_sec.line("[ISMPC_Solver][DumpState][{}] m_G_kernel size={} any_nan={} front={} back={}", tag, m_G_kernel.size(), any_nan, m_G_kernel.empty() ? 0.0 : m_G_kernel.front(), m_G_kernel.empty() ? 0.0 : m_G_kernel.back());
+    mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_G_kernel size={} any_nan={} front={} back={}", tag, m_G_kernel.size(), any_nan, m_G_kernel.empty() ? 0.0 : m_G_kernel.front(), m_G_kernel.empty() ? 0.0 : m_G_kernel.back());
   }
   {
     bool any_nan = false;
     for(double v : m_K_kernel) { if(std::isnan(v)) { any_nan = true; break; } }
-    dump_sec.line("[ISMPC_Solver][DumpState][{}] m_K_kernel size={} any_nan={} front={} back={}", tag, m_K_kernel.size(), any_nan, m_K_kernel.empty() ? 0.0 : m_K_kernel.front(), m_K_kernel.empty() ? 0.0 : m_K_kernel.back());
+    mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_K_kernel size={} any_nan={} front={} back={}", tag, m_K_kernel.size(), any_nan, m_K_kernel.empty() ? 0.0 : m_K_kernel.front(), m_K_kernel.empty() ? 0.0 : m_K_kernel.back());
   }
   {
     bool any_nan = false;
     for(double v : m_Omega) { if(std::isnan(v)) { any_nan = true; break; } }
-    dump_sec.line("[ISMPC_Solver][DumpState][{}] m_Omega size={} any_nan={} front={} back={}", tag, m_Omega.size(), any_nan, m_Omega.empty() ? 0.0 : m_Omega.front(), m_Omega.empty() ? 0.0 : m_Omega.back());
+    mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_Omega size={} any_nan={} front={} back={}", tag, m_Omega.size(), any_nan, m_Omega.empty() ? 0.0 : m_Omega.front(), m_Omega.empty() ? 0.0 : m_Omega.back());
   }
   {
     bool any_nan = false;
     for(double v : m_S_cum) { if(std::isnan(v)) { any_nan = true; break; } }
-    dump_sec.line("[ISMPC_Solver][DumpState][{}] m_S_cum size={} any_nan={} front={} back={}", tag, m_S_cum.size(), any_nan, m_S_cum.empty() ? 0.0 : m_S_cum.front(), m_S_cum.empty() ? 0.0 : m_S_cum.back());
+    mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_S_cum size={} any_nan={} front={} back={}", tag, m_S_cum.size(), any_nan, m_S_cum.empty() ? 0.0 : m_S_cum.front(), m_S_cum.empty() ? 0.0 : m_S_cum.back());
   }
   {
     bool any_nan = false;
     for(double v : m_beta) { if(std::isnan(v)) { any_nan = true; break; } }
-    dump_sec.line("[ISMPC_Solver][DumpState][{}] m_beta size={} any_nan={} front={} back={}", tag, m_beta.size(), any_nan, m_beta.empty() ? 0.0 : m_beta.front(), m_beta.empty() ? 0.0 : m_beta.back());
+    mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_beta size={} any_nan={} front={} back={}", tag, m_beta.size(), any_nan, m_beta.empty() ? 0.0 : m_beta.front(), m_beta.empty() ? 0.0 : m_beta.back());
   }
   {
     bool any_nan = false;
     for(double v : m_eta) { if(std::isnan(v)) { any_nan = true; break; } }
-    dump_sec.line("[ISMPC_Solver][DumpState][{}] m_eta size={} any_nan={} front={} back={}", tag, m_eta.size(), any_nan, m_eta.empty() ? 0.0 : m_eta.front(), m_eta.empty() ? 0.0 : m_eta.back());
+    mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_eta size={} any_nan={} front={} back={}", tag, m_eta.size(), any_nan, m_eta.empty() ? 0.0 : m_eta.front(), m_eta.empty() ? 0.0 : m_eta.back());
   }
   {
     bool any_nan = false;
     for(double v : m_eta_free) { if(std::isnan(v)) { any_nan = true; break; } }
-    dump_sec.line("[ISMPC_Solver][DumpState][{}] m_eta_free size={} any_nan={} front={} back={}", tag, m_eta_free.size(), any_nan, m_eta_free.empty() ? 0.0 : m_eta_free.front(), m_eta_free.empty() ? 0.0 : m_eta_free.back());
+    mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_eta_free size={} any_nan={} front={} back={}", tag, m_eta_free.size(), any_nan, m_eta_free.empty() ? 0.0 : m_eta_free.front(), m_eta_free.empty() ? 0.0 : m_eta_free.back());
   }
   {
     bool any_nan = false;
     for(double v : m_timestamp) { if(std::isnan(v)) { any_nan = true; break; } }
-    dump_sec.line("[ISMPC_Solver][DumpState][{}] m_timestamp size={} any_nan={} front={} back={}", tag, m_timestamp.size(), any_nan, m_timestamp.empty() ? 0.0 : m_timestamp.front(), m_timestamp.empty() ? 0.0 : m_timestamp.back());
+    mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] m_timestamp size={} any_nan={} front={} back={}", tag, m_timestamp.size(), any_nan, m_timestamp.empty() ? 0.0 : m_timestamp.front(), m_timestamp.empty() ? 0.0 : m_timestamp.back());
   }
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] corr_steps_ size={}", tag, corr_steps_.size());
-  dump_sec.line("[ISMPC_Solver][DumpState][{}] input_steps_ size={}", tag, input_steps_.size());
-
-  // ---- raw values: the lines above only give hasNaN/norm for most vectors/matrices ----
-  using ismpc_dump::flat;
-  using ismpc_dump::nonFinite;
-  using ismpc_dump::pose;
-  using ismpc_dump::vecE;
-  using ismpc_dump::vecs;
-  dump_sec.line("[VALUES] U_k=({}) P_c_k=({}) V_c_k=({}) P_z_k=({}) P_u_k=({}) P_z_k_delayed=({})", flat(U_k),
-                flat(P_c_k), flat(V_c_k), flat(P_z_k), flat(P_u_k), flat(P_z_k_delayed));
-  dump_sec.line("[VALUES] stab_error=({}) w_k=({}) w_k_inf=({}) Lc_k=({}) m_ref_zmp=({})", flat(stab_error), flat(w_k),
-                flat(w_k_inf), flat(Lc_k), flat(m_ref_zmp));
-  dump_sec.line("[VALUES] m_admittance_targets {}", vecE(m_admittance_targets));
-  dump_sec.line("[VALUES] m_timestamp {}", vecs(m_timestamp, 16));
-  dump_sec.line("[VALUES] m_eta {}", vecs(m_eta));
-  dump_sec.line("[VALUES] m_eta_free {}", vecs(m_eta_free));
-  dump_sec.line("[VALUES] CoM_height {}", vecs(CoM_height));
-  dump_sec.line("[VALUES] m_X_MPC {}", vecE(m_X_MPC));
-  dump_sec.line("[VALUES] m_Y_MPC {}", vecE(m_Y_MPC));
-  dump_sec.line("[VALUES] QP_Output size={} nonfinite={}", QP_Output.size(), nonFinite(QP_Output));
-  for(size_t i = 0; i < input_steps_.size() && i < 6; ++i)
-  {
-    dump_sec.line("[VALUES] input_steps_[{}] {}", i, pose(input_steps_[i]));
-  }
-  for(size_t i = 0; i < corr_steps_.size() && i < 6; ++i)
-  {
-    dump_sec.line("[VALUES] corr_steps_[{}] {}", i, pose(corr_steps_[i]));
-  }
-  dump_sec.line("[VALUES] feasibilitySolver optimal_timings {} optimal_ds {} optimal_steps_n={} region_n={}",
-                vecs(m_feasibilitySolver.get_optimal_steps_timings()),
-                vecs(m_feasibilitySolver.get_optimal_steps_ds_duration()),
-                m_feasibilitySolver.get_optimal_footsteps().size(), m_feasibilitySolver.get_feasibility_region().size());
-  dump_sec.line("[VALUES] sine m_sine_phase={} m_sine_last_t_global={} m_test_signal={} mode_switch_pending={} "
-                "com_height_avg_overridden_by_gui={} CoM_height_avg={} m_com_z_amplitude={}",
-                m_sine_phase, m_sine_last_t_global, static_cast<int>(m_test_signal), m_mode_switch_pending,
-                m_com_height_avg_overridden_by_gui, CoM_height_avg, m_com_z_amplitude);
-  dump_sec.line("[VALUES] timing m_tk={} m_t_global={} m_t_delay={} m_delay_elapsed={} m_t_lift={} NextOptimalTs={} "
-                "m_Tds={} m_input_Tds={} m_feas_res={} m_stop={} QPsuccess={}",
-                m_tk, m_t_global, m_t_delay, m_delay_elapsed, m_t_lift, NextOptimalTs, m_Tds, m_input_Tds, m_feas_res,
-                m_stop, QPsuccess);
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] corr_steps_ size={}", tag, corr_steps_.size());
+  mc_rtc::log::warning("[ISMPC_Solver][DumpState][{}] input_steps_ size={}", tag, input_steps_.size());
 }
 
 void ISMPC_Solver::configure(const ControllerConfiguration & config)
