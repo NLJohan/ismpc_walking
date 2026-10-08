@@ -35,8 +35,8 @@ void Walking_controller::JoystickInputs()
       }
       if(buttonEvent_func(joystickButtonInputs::B) && button_func(joystickButtonInputs::B))
       {
-        mc_rtc::log::error_and_throw<std::runtime_error>("Hard Emergency triggered");
         emergencyFlag = true;
+        mc_rtc::log::error_and_throw<std::runtime_error>("Hard Emergency triggered");
       }
       if(buttonEvent_func(joystickButtonInputs::A) && button_func(joystickButtonInputs::A))
       {
@@ -64,26 +64,31 @@ void Walking_controller::JoystickInputs()
       // an observation via the ismpc_walking::get_user_ref_vel datastore
       // getter -- the joystick keeps running exactly as before, its output
       // just has a different destination now.
+      // The velocity limits come from the YAML (walking_controller.joystick_max_velocity = [vx, vy, omega]) and are
+      // reached at full deflection. kStickCenter is a property of the device, not a limit: sticks report [0, 1] with the
+      // rest position at 0.5, so (raw - kStickCenter) / kStickCenter is in [-1, 1]. The triggers (-trigger + 1) are
+      // assumed to span [0, 1], as before.
+      constexpr double kStickCenter = 0.5;
       user_reference_velocity.setZero();
       double vx_forward = -trigger_func(joystickAnalogicInputs::RT) + 1;
       double vx_backward = -trigger_func(joystickAnalogicInputs::LT) + 1;
       if(vx_forward > 0.1)
       {
-        user_reference_velocity.x() = vx_forward;
+        user_reference_velocity.x() = vx_forward * joystick_max_velocity_.x();
       }
       if(vx_backward > 0.1)
       {
-        user_reference_velocity.x() = -vx_backward;
+        user_reference_velocity.x() = -vx_backward * joystick_max_velocity_.x();
       }
-      double omega = stick_func(joystickAnalogicInputs::R_STICK).y() - 0.5;
-      double vy = stick_func(joystickAnalogicInputs::L_STICK).y() - 0.5;
+      double omega = stick_func(joystickAnalogicInputs::R_STICK).y() - kStickCenter;
+      double vy = stick_func(joystickAnalogicInputs::L_STICK).y() - kStickCenter;
       if(std::abs(omega) > 0.1)
       {
-        user_reference_velocity.z() = omega;
+        user_reference_velocity.z() = omega / kStickCenter * joystick_max_velocity_.z();
       }
       if(std::abs(vy) > 0.15)
       {
-        user_reference_velocity.y() = vy;
+        user_reference_velocity.y() = vy / kStickCenter * joystick_max_velocity_.y();
       }
     }
   }

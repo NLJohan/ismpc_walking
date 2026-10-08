@@ -155,6 +155,10 @@ public:
     {
       obs_filter_cutoff_T_ = config("walking_controller")("obs_filter_cutoff_T");
     }
+    if(config("walking_controller").has("max_velocity"))
+    {
+      joystick_max_velocity_ = config("walking_controller")("max_velocity");
+    }
     controller_config_.footStepHeight = config("walking_controller")("footstep_height");
 
     controller_config_.SwingFootStiffness = config("tasks")("swingfoot_stiffness");
@@ -974,6 +978,9 @@ private:
   // RL observation filters: one first-order low-pass on the 3-vector (perturbation norm, zmp error norm, dcm bias
   // norm). Elementwise, so equal to three independent scalar filters with the same cutoff period.
   double obs_filter_cutoff_T_ = 10.0; // s, YAML walking_controller.obs_filter_cutoff_T
+  // Joystick velocity limits (vx, vy, omega), YAML walking_controller.joystick_max_velocity. JoystickInputs() scales the
+  // raw stick/trigger values so that full deflection gives these values.
+  Eigen::Vector3d joystick_max_velocity_ = Eigen::Vector3d(1.0, 0.5, 0.5);
   mc_filter::LowPass<Eigen::Vector3d> obs_filter_;
   Eigen::Vector3d obs_raw_ = Eigen::Vector3d::Zero(); // unfiltered norms of the last update (logging)
 

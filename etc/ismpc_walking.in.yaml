@@ -95,6 +95,7 @@ walking_controller:
     double_support_ratio: 0.25
   UseStepRecovery : true
   rl_velocity_control: true
+  max_velocity: [0.5, 0.2, 0.2]   # [vx, vy, omega]
 
   min_sg_suport_duration: 0.75
   min_dbl_suport_duration: 0.25
@@ -104,7 +105,7 @@ walking_controller:
   footstep_height: 0.08
   wrench_filter_cutoff_T: 2
   gamma_filter_cutoff_T: 0.2
-  obs_filter_cutoff_T: 5
+  obs_filter_cutoff_T: 10
   safety_foot_roll_error: 0.1
   max_swing_foot_velocity: 1.6
   stability_error_threshold: 0.2
