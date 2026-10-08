@@ -98,6 +98,19 @@ Walking_controller::Walking_controller(mc_rbdyn::RobotModulePtr rm,
   rConfig("right_foot_surface", rightFootName_);
   rConfig("left_hand_surface", leftHandName_);
   rConfig("right_hand_surface", rightHandName_);
+  {
+    // Time constant [s] of the exponential CoM-height return when the policy releases control. Optional yaml key:
+    // when absent, the default of ControllerConfiguration is kept (same pattern as the other config values).
+    rConfig("com_height_return_tau", controller_config_.com_height_return_tau);
+    if(!(controller_config_.com_height_return_tau > 0))
+    {
+      mc_rtc::log::error_and_throw<std::runtime_error>(
+          "[ismpc_walking] walking_controller.com_height_return_tau must be > 0, got {}",
+          controller_config_.com_height_return_tau);
+    }
+    MPCSolver.SetHeightReturnTau(controller_config_.com_height_return_tau);
+    mc_rtc::log::info("[ismpc_walking] CoM height return time constant: {} s", controller_config_.com_height_return_tau);
+  }
 
   mc_rtc::log::info(robots().envIndex());
   controller_timestep = dt;

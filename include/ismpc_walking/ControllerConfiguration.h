@@ -86,4 +86,8 @@ struct ControllerConfiguration
   // Low-pass filter frequency for external disturbance
   bool with_external_disturbance_highpass_filter_ = true;
   double external_disturbance_cutoff_period_ = 1.0;
+
+  // Time constant [s] of the exponential CoM-height return when the policy releases control
+  // (yaml: walking_controller.com_height_return_tau, optional).
+  double com_height_return_tau = 1.0;
 };

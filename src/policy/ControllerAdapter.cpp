@@ -29,9 +29,6 @@ constexpr size_t kWantsStopLagTicks = 1;
 // [I] Inferred, not measured. Set to 0 to disable.
 constexpr size_t kFiltLagTicks = 1;
 
-// ISMPC_Solver's own default for m_rl_com_z_offset (the value manual mode has always run with).
-constexpr double kManualOffset = 0.95;
-
 Vec3 toVec3(const Eigen::Vector3d & v) { return {v.x(), v.y(), v.z()}; }
 } // namespace
 
@@ -222,12 +219,11 @@ void ControllerAdapter::releaseOwnership() noexcept
 {
   if(!owning_) { return; }
   // Back to the manual defaults, so nothing the policy last wrote is left frozen in the controller (CoM height sine,
-  // Ts, RL twist). Immediate, no ramp. Stop is already set by PolicyRunner::release() (walk gate off).
+  // Ts, RL twist). Ts and the twist are immediate; the CoM height goes back to the solver's default height along an
+  // exponential (time constant: walking_controller.com_height_return_tau), see ISMPC_Solver::ReturnToDefaultHeight.
+  // Stop is already set by PolicyRunner::release() (walk gate off).
   auto & solver = ctl_.ismpc_solver();
-  solver.SetOffset(kManualOffset);
-  solver.SetFrequency(0.);
-  solver.SetSinAmp(0.);
-  solver.SetCosAmp(0.);
+  solver.ReturnToDefaultHeight();
   ctl_.ts(Walking_controller::kDefaultTSteps);
   ctl_.rl_reference_velocity.setZero();
   ctl_.rlVelocityControl = savedRlVelocityControl_;

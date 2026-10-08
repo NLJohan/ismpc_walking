@@ -281,6 +281,7 @@ public:
    */
   void SetCoMHeightSineParams(double offset, double frequency, double sin_amp, double cos_amp) noexcept
   {
+    CancelHeightReturn();
     m_rl_com_z_offset = offset;
     m_rl_com_z_frequency = frequency;
     m_rl_com_z_sin_amp = sin_amp;
@@ -299,10 +300,34 @@ public:
    * current by the time the solver consumes them -- there is no
    * in-between "some fields updated, others stale" state visible to run().
    */
-  void SetOffset(double v) noexcept { m_rl_com_z_offset = v; }
-  void SetFrequency(double v) noexcept { m_rl_com_z_frequency = v; }
-  void SetSinAmp(double v) noexcept { m_rl_com_z_sin_amp = v; }
-  void SetCosAmp(double v) noexcept { m_rl_com_z_cos_amp = v; }
+  void SetOffset(double v) noexcept { CancelHeightReturn(); m_rl_com_z_offset = v; }
+  void SetFrequency(double v) noexcept { CancelHeightReturn(); m_rl_com_z_frequency = v; }
+  void SetSinAmp(double v) noexcept { CancelHeightReturn(); m_rl_com_z_sin_amp = v; }
+  void SetCosAmp(double v) noexcept { CancelHeightReturn(); m_rl_com_z_cos_amp = v; }
+
+  /**
+   * Exponential return of the RlSine CoM height reference to CoM_height_avg (the solver's own default height, copied
+   * from the yaml `stabilizer.tasks.com.height` by configure()). One-shot event, no mode: called when the policy
+   * releases control. The next init_MPC() (MPC thread) captures the reference value it is currently using, resets
+   * the four RL parameters to their neutral values (m_rl_com_z_offset <- CoM_height_avg, the rest 0) and from then on
+   * builds, with h_def = m_rl_com_z_offset,
+   *   z(t)   = h_def + (z0 - h_def) * exp(-(t - t0) / tau)
+   *   zd(t)  = -(z - h_def) / tau
+   *   zdd(t) = (z - h_def) / tau^2
+   * tau is stretched when needed so that |zdd| <= g/2 (see init_MPC).
+   * for every horizon sample (coarse and fine tables alike), so height, velocity and acceleration stay consistent.
+   * Any later call of SetOffset/SetFrequency/SetSinAmp/SetCosAmp/SetCoMHeightSineParams cancels the return (policy
+   * re-activation, GUI, Python datastore setters).
+   * Plain bools like the other RL members (no atomics: ISMPC_Solver is copy-assigned in the controller constructor).
+   */
+  void ReturnToDefaultHeight() noexcept { m_height_return_requested = true; }
+  void SetHeightReturnTau(double tau) noexcept { m_height_return_tau = tau; }
+  double HeightReturnTau() const noexcept { return m_height_return_tau; }
+  void CancelHeightReturn() noexcept
+  {
+    m_height_return_requested = false;
+    m_height_return_active = false;
+  }
 
 
   double eta()
@@ -890,6 +915,13 @@ private:
   double m_rl_com_z_frequency = 0.0;   // RL-set sine frequency (Hz)
   double m_rl_com_z_sin_amp = 0.0;   // RL-set sine amplitude
   double m_rl_com_z_cos_amp = 0.0;   // RL-set cosine amplitude
+
+  // Exponential return of the RlSine height to CoM_height_avg (see ReturnToDefaultHeight()).
+  bool m_height_return_requested = false; // set by ReturnToDefaultHeight(), consumed by the next init_MPC()
+  bool m_height_return_active = false;
+  double m_height_return_tau = 0.0;   // s; always overwritten from the yaml (walking_controller.com_height_return_tau)
+  double m_height_return_t0 = 0.0;    // m_t_global at capture
+  double m_height_return_dev0 = 0.0;  // z(t0) - m_rl_com_z_offset (the default height)
 
   double CoM_height_avg = 0.95; // CoM height offset, avg value for sine signal or height before step (metres)
   double m_com_z_amplitude = 0.00; // Amplitude of the CoM height oscillation (metres)

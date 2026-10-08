@@ -69,6 +69,7 @@ void ISMPC_Solver::ResetEpisodeState(double com_height_offset)
   m_rl_com_z_frequency = 0.0;
   m_rl_com_z_sin_amp = 0.0;
   m_rl_com_z_cos_amp = 0.0;
+  CancelHeightReturn();
   w_k.setZero();
   m_kappa = 1;
   w_k_inf.setZero();
@@ -788,21 +789,62 @@ void ISMPC_Solver::init_MPC(const MPC_state & mpc_state, std::string Tail, int S
 
     case CoMHeightTestSignal::RlSine:
     {
-        // UNCHANGED -- RL-driven path, not modified by any of this thread's work.
+        // Policy-release return: ReturnToDefaultHeight() only raises a request; it is served here, on the MPC thread,
+        // so that z0 is the value of the very reference this solve would otherwise have used.
+        if(m_height_return_requested)
+        {
+            m_height_return_requested = false;
+            const double omega0 = 2.0 * M_PI * m_rl_com_z_frequency;
+            const double phase0 = omega0 * m_t_global;
+            const double z0 = m_rl_com_z_offset + m_rl_com_z_sin_amp * std::sin(phase0)
+                              + m_rl_com_z_cos_amp * std::cos(phase0);
+            // Neutral values (same as ResetEpisodeState): the default height is CoM_height_avg. The exponential below
+            // converges to m_rl_com_z_offset, and once it is cancelled or has decayed nothing stale remains.
+            m_rl_com_z_offset = CoM_height_avg;
+            m_height_return_t0 = m_t_global;
+            m_height_return_dev0 = z0 - m_rl_com_z_offset;
+            m_rl_com_z_frequency = 0.0;
+            m_rl_com_z_sin_amp = 0.0;
+            m_rl_com_z_cos_amp = 0.0;
+            m_height_return_active = true;
+        }
+        const bool height_return = m_height_return_active;
+        // |zdd| = |dev0| / tau^2 must stay below g or eta = sqrt((zdd + g) / z) goes NaN: stretch tau if the yaml value is
+        // too short for the deviation captured at release (g/2 bound).
+        const double ret_tau = std::max(m_height_return_tau, std::sqrt(2.0 * std::abs(m_height_return_dev0) / g));
+
         const double omega = 2.0 * M_PI * m_rl_com_z_frequency;
+        // z, zdot, zddot of the reference at absolute time t. Outside the return the expressions are exactly the
+        // previous inline ones.
+        auto reference_at = [&](double t_i, double & z, double & zd, double & zdd)
+        {
+            if(height_return)
+            {
+                const double dev = m_height_return_dev0 * std::exp(-std::max(t_i - m_height_return_t0, 0.0) / ret_tau);
+                z = m_rl_com_z_offset + dev;
+                zd = -dev / ret_tau;
+                zdd = dev / (ret_tau * ret_tau);
+            }
+            else
+            {
+                const double phase = omega * t_i;
+                const double sin_phase = std::sin(phase);
+                const double cos_phase = std::cos(phase);
+                z = m_rl_com_z_offset + m_rl_com_z_sin_amp * sin_phase + m_rl_com_z_cos_amp * cos_phase;
+                zd = omega * m_rl_com_z_sin_amp * cos_phase - omega * m_rl_com_z_cos_amp * sin_phase;
+                zdd = -omega * omega * (z - m_rl_com_z_offset);
+            }
+        };
+
         CoM_height_vel.resize(static_cast<size_t>(m_C));
         CoM_height_acc.resize(static_cast<size_t>(m_C));
         for(int i = 0; i < m_C; ++i)
         {
             const double t_i = m_t_global + static_cast<double>(i) * m_delta;
-            const double phase = omega * t_i;
-            const double sin_phase = std::sin(phase);
-            const double cos_phase = std::cos(phase);
+            double zc = 0, zc_dot = 0, zc_ddot = 0;
+            reference_at(t_i, zc, zc_dot, zc_ddot);
 
-            CoM_height[i] = m_rl_com_z_offset + m_rl_com_z_sin_amp * sin_phase + m_rl_com_z_cos_amp * cos_phase;
-            const double zc_dot = omega * m_rl_com_z_sin_amp * cos_phase - omega * m_rl_com_z_cos_amp * sin_phase;
-            const double zc_ddot = - omega * omega * (CoM_height[i] - m_rl_com_z_offset);
-
+            CoM_height[i] = zc;
             CoM_height_vel[i] = zc_dot;
             CoM_height_acc[i] = zc_ddot;
 
@@ -819,13 +861,7 @@ void ISMPC_Solver::init_MPC(const MPC_state & mpc_state, std::string Tail, int S
             for(size_t idx = 0; idx < n_fine; ++idx)
             {
                 const double t_i = m_t_global + static_cast<double>(idx) * m_delta_control;
-                const double phase = omega * t_i;
-                const double sin_phase = std::sin(phase);
-                const double cos_phase = std::cos(phase);
-
-                CoM_height_fine[idx] = m_rl_com_z_offset + m_rl_com_z_sin_amp * sin_phase + m_rl_com_z_cos_amp * cos_phase;
-                CoM_height_vel_fine[idx] = omega * m_rl_com_z_sin_amp * cos_phase - omega * m_rl_com_z_cos_amp * sin_phase;
-                CoM_height_acc_fine[idx] = - omega * omega * (CoM_height_fine[idx] - m_rl_com_z_offset);
+                reference_at(t_i, CoM_height_fine[idx], CoM_height_vel_fine[idx], CoM_height_acc_fine[idx]);
             }
         }
         break;

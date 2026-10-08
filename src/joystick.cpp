@@ -15,7 +15,7 @@ void Walking_controller::JoystickInputs()
       auto & trigger_func = datastore().get<std::function<double(joystickAnalogicInputs)>>("Joystick::Trigger");
       auto & stick_func = datastore().get<std::function<Eigen::Vector2d(joystickAnalogicInputs)>>("Joystick::Stick");
 
-      if(buttonEvent_func(joystickButtonInputs::START) && button_func(joystickButtonInputs::START))
+      if(buttonEvent_func(joystickButtonInputs::Y) && button_func(joystickButtonInputs::Y))
       {
         mc_rtc::log::info("ISMPC Control {}", active);
         if(!active)
